@@ -114,16 +114,18 @@ func inlineMarks() []inlineMark {
 }
 
 func (f *formatter) inline(text string) {
+	insideWord := false
 	for text != "" {
 		consumed := f.link(text)
 		if consumed == 0 {
-			consumed = f.marked(text)
+			consumed = f.marked(text, insideWord)
 		}
 		if consumed == 0 {
 			next := nextSpecial(text[1:]) + 1
 			f.write(text[:next])
 			consumed = next
 		}
+		insideWord = isWordByte(text[consumed-1])
 		text = text[consumed:]
 	}
 }
@@ -136,7 +138,7 @@ func nextSpecial(text string) int {
 	return index
 }
 
-func (f *formatter) marked(text string) int {
+func (f *formatter) marked(text string, insideWord bool) int {
 	for _, mark := range inlineMarks() {
 		if !strings.HasPrefix(text, mark.open) {
 			continue
@@ -146,7 +148,7 @@ func (f *formatter) marked(text string) int {
 		if closing <= 0 || !tight(rest[:closing]) {
 			continue
 		}
-		if mark.kind != entityCode && wordBoundaryNeeded(mark.open) && !boundaryAfter(rest[closing+len(mark.open):]) {
+		if mark.kind != entityCode && wordBoundaryNeeded(mark.open) && (insideWord || !boundaryAfter(rest[closing+len(mark.open):])) {
 			continue
 		}
 		f.span(mark.kind, rest[:closing], entity{})

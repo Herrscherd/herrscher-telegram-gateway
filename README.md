@@ -136,8 +136,11 @@ and logged.
 Which files the agent can read is decided by `contracts.ModelReadable`, the same
 rule the host applies, so the gateway never downloads a file the host drops.
 
-Text the host posts (a session banner, a notice) is Markdown too, and is sent
-the same way, with entities, so no marker shows as a literal character.
+Text the host posts or replies with (a session banner) is Markdown too, and is
+sent the same way, with entities, so no marker shows as a literal character. An
+underscore inside a word stays literal, so a snake_case name or a path is never
+turned into italics. A notice stays plain text, since its arguments are
+untrusted.
 
 ## Texts
 

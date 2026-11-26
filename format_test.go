@@ -27,6 +27,17 @@ func TestMarkdownBecomesEntitiesCountedInUTF16(t *testing.T) {
 	}
 }
 
+func TestAnUnderscoreInsideAWordStaysLiteral(t *testing.T) {
+	for _, text := range []string{"file_name_ and snake_case_name", "/srv/a/x_private_/y", "a__b__c"} {
+		if got := formatMarkdown(text); got.text != text || len(got.entities) != 0 {
+			t.Errorf("formatMarkdown(%q) = %q with %d entities", text, got.text, len(got.entities))
+		}
+	}
+	if got := formatMarkdown("an _aside_ here"); got.text != "an aside here" || len(got.entities) != 1 {
+		t.Fatalf("a standalone underscore pair = %q, %+v", got.text, got.entities)
+	}
+}
+
 func TestALongAnswerSplitsAtLinesAndKeepsEachEntityInsideItsPart(t *testing.T) {
 	line := strings.Repeat("a", 3000)
 	text := formatMarkdown(line + "\n**" + strings.Repeat("b", 3000) + "**")
