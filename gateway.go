@@ -78,7 +78,7 @@ func newGateway(ctx context.Context, api bot, set settings, self botIdentity, ms
 		noteUser: gateway.noteUser,
 		later:    gateway.later,
 		pending:  make(map[string]pendingBind),
-		albums:   make(map[string][]*message),
+		albums:   make(map[string]*heldAlbum),
 	}
 	return gateway
 }
@@ -129,6 +129,9 @@ func (g *Gateway) Close(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
+		if lost := g.router.heldMessages(); lost > 0 {
+			g.log.Warn("messages held for an album were dropped on close", "count", lost)
+		}
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("telegram gateway close: %w", ctx.Err())

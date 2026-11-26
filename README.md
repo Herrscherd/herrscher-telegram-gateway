@@ -1,12 +1,12 @@
 # herrscher-telegram-gateway
 
 **The Telegram edge.** It adapts the Telegram Bot API to the Herrscher gateway
-ports and registers itself from `init()`, so a host enables Telegram with a blank
-import and a rebuild. It talks to the Bot API over plain HTTPS, with no client
-library.
+ports and registers itself from `init()`, so a host enables Telegram with a
+blank import and a rebuild. It talks to the Bot API over plain HTTPS, with no
+client library.
 
-It receives updates by long polling (`getUpdates`), so the daemon needs no public
-URL and runs fine behind a NAT. It is a smart gateway: it implements
+It receives updates by long polling (`getUpdates`), so the daemon needs no
+public URL and runs fine behind a NAT. It is a smart gateway: it implements
 `RoutedEventSink` and draws the live turn itself.
 
 Status: experimental.
@@ -19,8 +19,8 @@ herrscher plugin add github.com/Herrscherd/herrscher-telegram-gateway
 
 Create the bot with BotFather, keep its privacy mode on, and give the daemon its
 token. The bot must have no webhook: Telegram refuses to hand out updates by
-polling while one is set. The gateway then logs the cause and its liveness
-probe fails until the webhook is removed with `deleteWebhook`.
+polling while one is set. The gateway then logs the cause and its liveness probe
+fails until the webhook is removed with `deleteWebhook`.
 
 ## Configuration
 
@@ -67,9 +67,9 @@ honoured from an allowed user and only for the draft of the turn still running.
 A private chat is one conversation, a group is one conversation, and each forum
 topic of a group is its own conversation. The first message of a conversation
 that has no session asks which repository to work on, with one button per
-repository (the first 20), and the message is delivered once the session
-exists. Only the person who asked can pick. With a single repository the
-session starts at once.
+repository (the first 20), and the message is delivered once the session exists.
+Only the person who asked can pick. With a single repository the session starts
+at once.
 
 A message with no text and no usable file (a sticker, a voice note, a location)
 is ignored. A file the agent cannot read (not an image, a PDF or a text file, or
@@ -86,11 +86,13 @@ Drafts are private chats only, so in a group the gateway posts one message and
 edits it at most every three seconds, then edits it into the final answer.
 
 Each turn answers the message that started it, even when more messages arrive
-while it runs: a turn finds its message by author and text, and a message the
-host drops before its turn starts leaves the queue by the same match. The prompt gets a 👀 reaction while its turn runs. It is cleared when the turn
-completes, swapped for 💔 when the turn failed, and a failed or stopped turn
-also says so in its last line. A rate limit from Telegram (`retry_after`) is
-waited out.
+while it runs: a turn finds its message by author and text. A message the host
+drops before its turn starts leaves the queue by the same match when the host
+sends its author and text on `abandoned` (added by the herrscher pull request
+for issue 206), and by its position otherwise. The prompt gets a 👀 reaction
+while its turn runs. It is cleared when the turn completes, swapped for 💔 when
+the turn failed, and a failed or stopped turn also says so in its last line. A
+rate limit from Telegram (`retry_after`) is waited out.
 
 Answers are formatted with message entities, never with escaped MarkdownV2: the
 gateway reads the Markdown a model writes (bold, italic, strikethrough, inline
@@ -121,12 +123,15 @@ error.
 A document or a photo (its largest size) is fetched with `getFile` and staged
 under the host's attachment tree (`$TMPDIR/herrscher-attachments/telegram`),
 then handed over as a `file://` path. A file over 10 MiB is skipped before it is
-downloaded, and a file name is cut to 120 bytes. The manifest declares no attachment host, so the host never fetches
-a Telegram URL itself.
+downloaded, and a file name is cut to 120 bytes. The manifest declares no
+attachment host, so the host never fetches a Telegram URL itself.
 
 An album arrives as one message per item. The gateway gathers the items that
-share a `media_group_id` for a second and hands them over as one message: the
-caption of the album, and every file in it.
+share a `media_group_id` until a second passes without a new one, and hands them
+over as one message: the caption of the album, and every file in it. A message
+sent while an album is gathered waits behind it, so the agent reads them in the
+order they were sent. An album still gathering when the daemon stops is lost,
+and logged.
 
 Which files the agent can read is decided by `contracts.ModelReadable`, the same
 rule the host applies, so the gateway never downloads a file the host drops.
@@ -142,5 +147,5 @@ following `HERRSCHER_LANG`. A notice is rendered in the recipient's language.
 scripts/check.sh
 ```
 
-runs the quality chain: tidy, format, golangci-lint, the comment check, the tests
-with the race detector, the build and govulncheck.
+runs the quality chain: tidy, format, golangci-lint, the comment check, the
+tests with the race detector, the build and govulncheck.

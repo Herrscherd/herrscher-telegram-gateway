@@ -55,7 +55,7 @@ type router struct {
 
 	mu      sync.Mutex
 	pending map[string]pendingBind
-	albums  map[string][]*message
+	albums  map[string]*heldAlbum
 }
 
 func (r *router) onUpdate(ctx context.Context, next update) {
@@ -87,47 +87,79 @@ func laneKeyOf(next update) string {
 	return conversationOf(next.Message).String()
 }
 
+type heldAlbum struct {
+	group   string
+	members []*message
+	after   []*message
+	gen     int
+}
+
 func (r *router) onMessage(ctx context.Context, msg *message) {
-	if msg.MediaGroupID != "" {
-		r.collect(ctx, msg)
+	conv := conversationOf(msg).String()
+	r.mu.Lock()
+	held, holding := r.albums[conv]
+	switch {
+	case holding && msg.MediaGroupID == held.group:
+		if len(held.members) < albumMaxItems {
+			held.members = append(held.members, msg)
+		}
+		held.gen++
+		r.mu.Unlock()
+		r.scheduleFlush(ctx, msg, held.gen)
+		return
+	case holding:
+		if len(held.after) < laneDepth {
+			held.after = append(held.after, msg)
+		}
+		r.mu.Unlock()
+		return
+	case msg.MediaGroupID != "":
+		r.albums[conv] = &heldAlbum{group: msg.MediaGroupID, members: []*message{msg}}
+		r.mu.Unlock()
+		r.scheduleFlush(ctx, msg, 0)
 		return
 	}
+	r.mu.Unlock()
 	r.handle(ctx, msg, []*message{msg})
 }
 
-func albumKey(msg *message) string {
-	return conversationOf(msg).String() + threadSeparator + msg.MediaGroupID
-}
-
-func (r *router) collect(ctx context.Context, msg *message) {
-	key := albumKey(msg)
-	r.mu.Lock()
-	first := len(r.albums[key]) == 0
-	if len(r.albums[key]) < albumMaxItems {
-		r.albums[key] = append(r.albums[key], msg)
-	}
-	r.mu.Unlock()
-	if first && !r.later(ctx, conversationOf(msg), func(ctx context.Context) { r.flushAlbum(ctx, key) }) {
-		r.flushAlbum(ctx, key)
+func (r *router) scheduleFlush(ctx context.Context, msg *message, gen int) {
+	conv := conversationOf(msg)
+	if !r.later(ctx, conv, func(ctx context.Context) { r.flushAlbum(ctx, conv.String(), gen) }) {
+		r.flushAlbum(ctx, conv.String(), gen)
 	}
 }
 
-func (r *router) flushAlbum(ctx context.Context, key string) {
+func (r *router) flushAlbum(ctx context.Context, conv string, gen int) {
 	r.mu.Lock()
-	members := r.albums[key]
-	delete(r.albums, key)
-	r.mu.Unlock()
-	if len(members) == 0 {
+	held, holding := r.albums[conv]
+	if !holding || held.gen != gen {
+		r.mu.Unlock()
 		return
 	}
-	lead := members[0]
-	for _, member := range members {
+	delete(r.albums, conv)
+	r.mu.Unlock()
+	lead := held.members[0]
+	for _, member := range held.members {
 		if member.Caption != "" || member.Text != "" {
 			lead = member
 			break
 		}
 	}
-	r.handle(ctx, lead, members)
+	r.handle(ctx, lead, held.members)
+	for _, next := range held.after {
+		r.onMessage(ctx, next)
+	}
+}
+
+func (r *router) heldMessages() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, held := range r.albums {
+		count += len(held.members) + len(held.after)
+	}
+	return count
 }
 
 func (r *router) handle(ctx context.Context, msg *message, members []*message) {

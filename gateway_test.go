@@ -496,6 +496,14 @@ func TestAFileTheAgentCannotReadIsNotFetched(t *testing.T) {
 	}
 }
 
+func albumPhoto(updateID, messageID int64, fileID, caption string) update {
+	next := privateText(updateID, messageID, testOwner, "")
+	next.Message.MediaGroupID = "album-1"
+	next.Message.Caption = caption
+	next.Message.Photo = []photoSize{{FileID: fileID, Width: 800, Height: 600, FileSize: 10}}
+	return next
+}
+
 func TestAnAlbumIsOneTurnWithAllItsFiles(t *testing.T) {
 	fake := newFakeTelegram(t)
 	for _, id := range []string{"p1", "p2", "p3"} {
@@ -506,14 +514,7 @@ func TestAnAlbumIsOneTurnWithAllItsFiles(t *testing.T) {
 	gateway := startGateway(t, fake, ctrl, nil)
 	gateway.album = 10 * time.Millisecond
 
-	photo := func(updateID, messageID int64, fileID, caption string) update {
-		next := privateText(updateID, messageID, testOwner, "")
-		next.Message.MediaGroupID = "album-1"
-		next.Message.Caption = caption
-		next.Message.Photo = []photoSize{{FileID: fileID, Width: 800, Height: 600, FileSize: 10}}
-		return next
-	}
-	fake.push(photo(1, 10, "p1", ""), photo(2, 11, "p2", "compare these"), photo(3, 12, "p3", ""))
+	fake.push(albumPhoto(1, 10, "p1", ""), albumPhoto(2, 11, "p2", "compare these"), albumPhoto(3, 12, "p3", ""))
 
 	ctrl.waitFor(t, "the album", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) > 0 })
 	settle(t, gateway, "42")
@@ -540,5 +541,47 @@ func TestAnAbandonedInputFromElsewhereKeepsTheTelegramPrompt(t *testing.T) {
 	answer := decodeCall[outgoing](t, fake.waitCalls(t, "sendMessage", 1)[0])
 	if answer.ReplyParameters == nil || answer.ReplyParameters.MessageID != 10 {
 		t.Fatalf("the answer replies to %+v, want 10", answer.ReplyParameters)
+	}
+}
+
+func TestAMessageSentAfterAnAlbumReachesTheSessionAfterIt(t *testing.T) {
+	fake := newFakeTelegram(t)
+	fake.files["documents/p1.txt"], fake.files["documents/p2.txt"] = "one", "two"
+	ctrl := newFakeControl()
+	ctrl.live("tg-42", "42")
+	gateway := startGateway(t, fake, ctrl, nil)
+	gateway.album = 20 * time.Millisecond
+
+	fake.push(albumPhoto(1, 10, "p1", "compare these"), albumPhoto(2, 11, "p2", ""), privateText(3, 12, testOwner, "which one is better?"))
+
+	ctrl.waitFor(t, "the album and the question", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 2 })
+	got := ctrl.submitted["tg-42"]
+	if got[0].Text != "compare these" || len(got[0].Attachments) != 2 || got[1].Text != "which one is better?" {
+		t.Fatalf("submitted %q with %d files, then %q", got[0].Text, len(got[0].Attachments), got[1].Text)
+	}
+}
+
+func TestEachAlbumItemRestartsTheWindow(t *testing.T) {
+	fake := newFakeTelegram(t)
+	fake.files["documents/p1.txt"], fake.files["documents/p2.txt"], fake.files["documents/p3.txt"] = "one", "two", "three"
+	ctrl := newFakeControl()
+	ctrl.live("tg-42", "42")
+	gateway := startGateway(t, fake, ctrl, nil)
+	gateway.album = 250 * time.Millisecond
+
+	fake.push(albumPhoto(1, 10, "p1", "slow upload"))
+	gap := time.NewTimer(150 * time.Millisecond)
+	<-gap.C
+	fake.push(albumPhoto(2, 11, "p2", ""))
+	gap.Reset(150 * time.Millisecond)
+	<-gap.C
+	fake.push(albumPhoto(3, 12, "p3", ""))
+
+	ctrl.waitFor(t, "the album", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) > 0 })
+	settle(t, gateway, "42")
+	gap.Reset(300 * time.Millisecond)
+	<-gap.C
+	if got := ctrl.submitted["tg-42"]; len(got) != 1 || len(got[0].Attachments) != 3 {
+		t.Fatalf("submitted %d turns, the first with %d files", len(got), len(got[0].Attachments))
 	}
 }
