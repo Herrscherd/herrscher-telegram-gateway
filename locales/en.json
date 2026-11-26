@@ -1,0 +1,127 @@
+[
+  {
+    "id": "telegram.setting.token",
+    "description": "Help of the token setting",
+    "other": "the bot token BotFather gave"
+  },
+  {
+    "id": "telegram.setting.owner",
+    "description": "Help of the owner setting",
+    "other": "the numeric id of the user the bot always obeys"
+  },
+  {
+    "id": "telegram.setting.allowed_users",
+    "description": "Help of the allowed_users setting",
+    "other": "numeric user ids allowed to make the bot act"
+  },
+  {
+    "id": "telegram.setting.allowed_chats",
+    "description": "Help of the allowed_chats setting",
+    "other": "numeric ids of the groups the bot answers in, none by default"
+  },
+  {
+    "id": "telegram.setting.allow_all_users",
+    "description": "Help of the allow_all_users setting",
+    "other": "let anyone who can reach the bot make it act"
+  },
+  {
+    "id": "telegram.setting.agent",
+    "description": "Help of the agent setting",
+    "other": "the persona every session runs as"
+  },
+  {
+    "id": "telegram.repo.none",
+    "description": "No repository to start a session on",
+    "other": "No repository to work on: add one to the workspace or configure a forge."
+  },
+  {
+    "id": "telegram.repo.ask",
+    "description": "Question asking which repository a new session works on",
+    "other": "Which repository should this conversation work on?"
+  },
+  {
+    "id": "telegram.repo.ask_capped",
+    "description": "The repository question when only the first repositories are shown",
+    "other": "{{.Question}} (the first {{.Shown}} of {{.Count}} are shown)"
+  },
+  {
+    "id": "telegram.repo.started",
+    "description": "Toast confirming a repository pick, before the session exists",
+    "other": "Starting a session on {{.Repo}}."
+  },
+  {
+    "id": "telegram.menu.denied",
+    "description": "Answer to a button press from someone not allowed",
+    "other": "You are not allowed to answer this."
+  },
+  {
+    "id": "telegram.menu.owned",
+    "description": "Answer to a button press from someone other than the asker",
+    "other": "Only the person who asked can pick."
+  },
+  {
+    "id": "telegram.menu.gone",
+    "description": "Answer to a press on a menu that no longer waits",
+    "other": "This choice is no longer waiting."
+  },
+  {
+    "id": "telegram.menu.picked",
+    "description": "Answer confirming a pick",
+    "other": "Picked: {{.Choice}}"
+  },
+  {
+    "id": "telegram.turn.failed",
+    "description": "Line closing a turn that failed",
+    "other": "The turn failed."
+  },
+  {
+    "id": "telegram.turn.interrupted",
+    "description": "Line closing a turn that was stopped",
+    "other": "The turn was stopped."
+  },
+  {
+    "id": "telegram.turn.empty",
+    "description": "Line closing a turn that ended with nothing to say",
+    "other": "Done, nothing to add."
+  },
+  {
+    "id": "telegram.turn.abandoned",
+    "description": "Text left on a live message when its turn was abandoned",
+    "other": "The turn was abandoned."
+  },
+  {
+    "id": "telegram.undelivered",
+    "description": "The message could not reach the new session",
+    "other": "The session started but did not receive your message, send it again."
+  },
+  {
+    "id": "telegram.stop.none",
+    "description": "Answer to /stop when no session runs here",
+    "other": "No session runs in this conversation."
+  },
+  {
+    "id": "telegram.stop.sent",
+    "description": "Answer to /stop when the turn is being stopped",
+    "other": "Stopping the turn."
+  },
+  {
+    "id": "telegram.control.unavailable",
+    "description": "The daemon is not ready to take messages",
+    "other": "The daemon is not ready yet, try again in a moment."
+  },
+  {
+    "id": "telegram.notice.unexpected",
+    "description": "Introduction of an unexpected failure",
+    "other": "Something unexpected went wrong:"
+  },
+  {
+    "id": "telegram.notice.no_detail",
+    "description": "An unexpected failure without detail",
+    "other": "No detail was given."
+  },
+  {
+    "id": "telegram.file.refused",
+    "description": "A file of the message could not be handed to the agent",
+    "other": "This file was not accepted: only images, PDFs and text files up to 10 MiB reach the agent."
+  }
+]

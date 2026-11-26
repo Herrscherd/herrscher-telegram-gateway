@@ -1,0 +1,127 @@
+[
+  {
+    "id": "telegram.setting.token",
+    "description": "Help of the token setting",
+    "other": "le jeton du bot donné par BotFather"
+  },
+  {
+    "id": "telegram.setting.owner",
+    "description": "Help of the owner setting",
+    "other": "l'identifiant numérique de la personne à qui le bot obéit toujours"
+  },
+  {
+    "id": "telegram.setting.allowed_users",
+    "description": "Help of the allowed_users setting",
+    "other": "identifiants numériques des personnes autorisées à faire agir le bot"
+  },
+  {
+    "id": "telegram.setting.allowed_chats",
+    "description": "Help of the allowed_chats setting",
+    "other": "identifiants numériques des groupes où le bot répond, aucun par défaut"
+  },
+  {
+    "id": "telegram.setting.allow_all_users",
+    "description": "Help of the allow_all_users setting",
+    "other": "laisser quiconque joint le bot le faire agir"
+  },
+  {
+    "id": "telegram.setting.agent",
+    "description": "Help of the agent setting",
+    "other": "le persona sous lequel tourne chaque session"
+  },
+  {
+    "id": "telegram.repo.none",
+    "description": "No repository to start a session on",
+    "other": "Aucun dépôt sur lequel travailler : ajoute-en un à l'espace de travail ou configure une forge."
+  },
+  {
+    "id": "telegram.repo.ask",
+    "description": "Question asking which repository a new session works on",
+    "other": "Sur quel dépôt cette conversation doit-elle travailler ?"
+  },
+  {
+    "id": "telegram.repo.ask_capped",
+    "description": "The repository question when only the first repositories are shown",
+    "other": "{{.Question}} (les {{.Shown}} premiers sur {{.Count}} sont affichés)"
+  },
+  {
+    "id": "telegram.repo.started",
+    "description": "Toast confirming a repository pick, before the session exists",
+    "other": "Démarrage d'une session sur {{.Repo}}."
+  },
+  {
+    "id": "telegram.menu.denied",
+    "description": "Answer to a button press from someone not allowed",
+    "other": "Tu n'as pas le droit de répondre à ceci."
+  },
+  {
+    "id": "telegram.menu.owned",
+    "description": "Answer to a button press from someone other than the asker",
+    "other": "Seule la personne qui a demandé peut choisir."
+  },
+  {
+    "id": "telegram.menu.gone",
+    "description": "Answer to a press on a menu that no longer waits",
+    "other": "Ce choix n'est plus en attente."
+  },
+  {
+    "id": "telegram.menu.picked",
+    "description": "Answer confirming a pick",
+    "other": "Choisi : {{.Choice}}"
+  },
+  {
+    "id": "telegram.turn.failed",
+    "description": "Line closing a turn that failed",
+    "other": "Le tour a échoué."
+  },
+  {
+    "id": "telegram.turn.interrupted",
+    "description": "Line closing a turn that was stopped",
+    "other": "Le tour a été arrêté."
+  },
+  {
+    "id": "telegram.turn.empty",
+    "description": "Line closing a turn that ended with nothing to say",
+    "other": "Terminé, rien à ajouter."
+  },
+  {
+    "id": "telegram.turn.abandoned",
+    "description": "Text left on a live message when its turn was abandoned",
+    "other": "Le tour a été abandonné."
+  },
+  {
+    "id": "telegram.undelivered",
+    "description": "The message could not reach the new session",
+    "other": "La session a démarré mais n'a pas reçu ton message, renvoie-le."
+  },
+  {
+    "id": "telegram.stop.none",
+    "description": "Answer to /stop when no session runs here",
+    "other": "Aucune session ne tourne dans cette conversation."
+  },
+  {
+    "id": "telegram.stop.sent",
+    "description": "Answer to /stop when the turn is being stopped",
+    "other": "Arrêt du tour en cours."
+  },
+  {
+    "id": "telegram.control.unavailable",
+    "description": "The daemon is not ready to take messages",
+    "other": "Le démon n'est pas encore prêt, réessaie dans un instant."
+  },
+  {
+    "id": "telegram.notice.unexpected",
+    "description": "Introduction of an unexpected failure",
+    "other": "Une erreur inattendue s'est produite :"
+  },
+  {
+    "id": "telegram.notice.no_detail",
+    "description": "An unexpected failure without detail",
+    "other": "Aucun détail n'a été donné."
+  },
+  {
+    "id": "telegram.file.refused",
+    "description": "A file of the message could not be handed to the agent",
+    "other": "Ce fichier n'a pas été accepté : seuls les images, les PDF et les fichiers texte jusqu'à 10 Mio parviennent à l'agent."
+  }
+]
