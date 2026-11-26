@@ -136,6 +136,9 @@ and logged.
 Which files the agent can read is decided by `contracts.ModelReadable`, the same
 rule the host applies, so the gateway never downloads a file the host drops.
 
+Text the host posts (a session banner, a notice) is Markdown too, and is sent
+the same way, with entities, so no marker shows as a literal character.
+
 ## Texts
 
 Every text the gateway writes comes from its catalog, in English and French,
