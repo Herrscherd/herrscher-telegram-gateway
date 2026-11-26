@@ -110,7 +110,7 @@ func (r *router) onMessage(ctx context.Context, msg *message) {
 		r.mu.Unlock()
 		r.scheduleFlush(ctx, msg, gen)
 		return
-	case holding && !isStop(msg):
+	case holding && !r.isStop(msg):
 		kept := len(held.after) < laneDepth
 		if kept {
 			held.after = append(held.after, msg)
@@ -132,9 +132,8 @@ func (r *router) onMessage(ctx context.Context, msg *message) {
 	r.handle(ctx, msg, []*message{msg})
 }
 
-func isStop(msg *message) bool {
-	command, _, _ := strings.Cut(strings.TrimSpace(msg.Text), "@")
-	return strings.EqualFold(command, stopCommand)
+func (r *router) isStop(msg *message) bool {
+	return strings.EqualFold(stripCommandMention(strings.TrimSpace(msg.Text), r.self.Username), stopCommand)
 }
 
 func (r *router) scheduleFlush(ctx context.Context, msg *message, gen int) {

@@ -593,10 +593,10 @@ func TestStopIsNotHeldBehindAnAlbum(t *testing.T) {
 	gateway := startGateway(t, fake, ctrl, nil)
 	gateway.album = time.Minute
 
-	fake.push(albumPhoto(1, 10, "p1", "look"), privateText(2, 11, testOwner, "/stop"))
+	fake.push(albumPhoto(1, 10, "p1", "look"), privateText(2, 11, testOwner, "/stop@otherbot"), privateText(3, 12, testOwner, "/stop@"+testBotName))
 
 	ctrl.waitFor(t, "the interrupt", func(c *fakeControl) bool { return len(c.interrupted) == 1 })
 	if len(ctrl.submitted["tg-42"]) != 0 {
-		t.Fatal("the album was handed over before its window ended")
+		t.Fatal("a message went past the held album")
 	}
 }
