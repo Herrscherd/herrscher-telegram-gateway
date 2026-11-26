@@ -28,7 +28,7 @@ func TestMarkdownBecomesEntitiesCountedInUTF16(t *testing.T) {
 }
 
 func TestAnUnderscoreInsideAWordStaysLiteral(t *testing.T) {
-	for _, text := range []string{"file_name_ and snake_case_name", "/srv/a/x_private_/y", "a__b__c"} {
+	for _, text := range []string{"file_name_ and snake_case_name", "/srv/a/x_private_/y", "a__b__c", "é_x_ y", "x_é_"} {
 		if got := formatMarkdown(text); got.text != text || len(got.entities) != 0 {
 			t.Errorf("formatMarkdown(%q) = %q with %d entities", text, got.text, len(got.entities))
 		}

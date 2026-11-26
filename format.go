@@ -2,7 +2,9 @@ package telegram
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf16"
+	"unicode/utf8"
 )
 
 const (
@@ -125,7 +127,8 @@ func (f *formatter) inline(text string) {
 			f.write(text[:next])
 			consumed = next
 		}
-		insideWord = isWordByte(text[consumed-1])
+		last, _ := utf8.DecodeLastRuneInString(text[:consumed])
+		insideWord = isWordRune(last)
 		text = text[consumed:]
 	}
 }
@@ -167,11 +170,12 @@ func boundaryAfter(rest string) bool {
 	if rest == "" {
 		return true
 	}
-	return !isWordByte(rest[0])
+	next, _ := utf8.DecodeRuneInString(rest)
+	return !isWordRune(next)
 }
 
-func isWordByte(char byte) bool {
-	return char == '_' || (char >= '0' && char <= '9') || (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z')
+func isWordRune(char rune) bool {
+	return char == '_' || unicode.IsLetter(char) || unicode.IsDigit(char)
 }
 
 func (f *formatter) link(text string) int {
