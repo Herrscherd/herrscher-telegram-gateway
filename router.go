@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf16"
 
 	contracts "github.com/Herrscherd/herrscher-contracts"
@@ -29,6 +30,8 @@ const (
 	stopSentKey    = "telegram.stop.sent"
 	notReadyKey    = "telegram.control.unavailable"
 	fileRefusedKey = "telegram.file.refused"
+	albumWindow    = time.Second
+	albumMaxItems  = 10
 )
 
 type pendingBind struct {
@@ -48,9 +51,11 @@ type router struct {
 	files    stager
 	ctrl     func() contracts.SessionControl
 	noteUser func(ctx context.Context, conv chatRef, noted notedPrompt)
+	later    func(ctx context.Context, conv chatRef, next job) bool
 
 	mu      sync.Mutex
 	pending map[string]pendingBind
+	albums  map[string][]*message
 }
 
 func (r *router) onUpdate(ctx context.Context, next update) {
@@ -83,6 +88,49 @@ func laneKeyOf(next update) string {
 }
 
 func (r *router) onMessage(ctx context.Context, msg *message) {
+	if msg.MediaGroupID != "" {
+		r.collect(ctx, msg)
+		return
+	}
+	r.handle(ctx, msg, []*message{msg})
+}
+
+func albumKey(msg *message) string {
+	return conversationOf(msg).String() + threadSeparator + msg.MediaGroupID
+}
+
+func (r *router) collect(ctx context.Context, msg *message) {
+	key := albumKey(msg)
+	r.mu.Lock()
+	first := len(r.albums[key]) == 0
+	if len(r.albums[key]) < albumMaxItems {
+		r.albums[key] = append(r.albums[key], msg)
+	}
+	r.mu.Unlock()
+	if first && !r.later(ctx, conversationOf(msg), func(ctx context.Context) { r.flushAlbum(ctx, key) }) {
+		r.flushAlbum(ctx, key)
+	}
+}
+
+func (r *router) flushAlbum(ctx context.Context, key string) {
+	r.mu.Lock()
+	members := r.albums[key]
+	delete(r.albums, key)
+	r.mu.Unlock()
+	if len(members) == 0 {
+		return
+	}
+	lead := members[0]
+	for _, member := range members {
+		if member.Caption != "" || member.Text != "" {
+			lead = member
+			break
+		}
+	}
+	r.handle(ctx, lead, members)
+}
+
+func (r *router) handle(ctx context.Context, msg *message, members []*message) {
 	text, addressed := r.addressed(msg)
 	if !addressed {
 		return
@@ -97,8 +145,13 @@ func (r *router) onMessage(ctx context.Context, msg *message) {
 		r.stop(ctx, ctrl, conv)
 		return
 	}
-	attachments := r.files.stage(ctx, conv, msg)
-	if len(attachments) < len(filesOf(msg)) {
+	var attachments []contracts.Attachment
+	offered := 0
+	for _, member := range members {
+		attachments = append(attachments, r.files.stage(ctx, conv, member)...)
+		offered += len(filesOf(member))
+	}
+	if len(attachments) < offered {
 		r.post(ctx, conv, r.msgs.say(fileRefusedKey, nil))
 	}
 	if text == "" && len(attachments) == 0 {

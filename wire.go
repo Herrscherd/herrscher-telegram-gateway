@@ -17,6 +17,7 @@ type message struct {
 	Caption         string      `json:"caption,omitempty"`
 	CaptionEntities []entity    `json:"caption_entities,omitempty"`
 	ReplyTo         *message    `json:"reply_to_message,omitempty"`
+	MediaGroupID    string      `json:"media_group_id,omitempty"`
 	IsTopicMessage  bool        `json:"is_topic_message,omitempty"`
 	Document        *document   `json:"document,omitempty"`
 	Photo           []photoSize `json:"photo,omitempty"`

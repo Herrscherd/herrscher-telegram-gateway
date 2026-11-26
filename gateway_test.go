@@ -495,3 +495,50 @@ func TestAFileTheAgentCannotReadIsNotFetched(t *testing.T) {
 		t.Fatal("an unreadable file was fetched or not explained")
 	}
 }
+
+func TestAnAlbumIsOneTurnWithAllItsFiles(t *testing.T) {
+	fake := newFakeTelegram(t)
+	for _, id := range []string{"p1", "p2", "p3"} {
+		fake.files["documents/"+id+".txt"] = "jpeg bytes of " + id
+	}
+	ctrl := newFakeControl()
+	ctrl.live("tg-42", "42")
+	gateway := startGateway(t, fake, ctrl, nil)
+	gateway.album = 10 * time.Millisecond
+
+	photo := func(updateID, messageID int64, fileID, caption string) update {
+		next := privateText(updateID, messageID, testOwner, "")
+		next.Message.MediaGroupID = "album-1"
+		next.Message.Caption = caption
+		next.Message.Photo = []photoSize{{FileID: fileID, Width: 800, Height: 600, FileSize: 10}}
+		return next
+	}
+	fake.push(photo(1, 10, "p1", ""), photo(2, 11, "p2", "compare these"), photo(3, 12, "p3", ""))
+
+	ctrl.waitFor(t, "the album", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) > 0 })
+	settle(t, gateway, "42")
+	got := ctrl.submitted["tg-42"]
+	if len(got) != 1 || got[0].Text != "compare these" || len(got[0].Attachments) != 3 || got[0].MessageID != "11" {
+		t.Fatalf("submitted %+v", got)
+	}
+}
+
+func TestAnAbandonedInputFromElsewhereKeepsTheTelegramPrompt(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.live("tg-42", "42")
+	gateway := startGateway(t, fake, ctrl, nil)
+	conv := contracts.Conversation{Gateway: gatewayKind, ID: "42"}
+
+	fake.push(privateText(1, 10, testOwner, "first"))
+	ctrl.waitFor(t, "the message", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 1 })
+	settle(t, gateway, conv.ID)
+	gateway.EmitTo(conv, contracts.Event{T: eventAbandoned, Who: "shan", Text: "typed in the terminal"})
+	gateway.EmitTo(conv, humanAsking("first"))
+	gateway.EmitTo(conv, contracts.Event{T: eventReply, Done: true, Text: "done"})
+
+	answer := decodeCall[outgoing](t, fake.waitCalls(t, "sendMessage", 1)[0])
+	if answer.ReplyParameters == nil || answer.ReplyParameters.MessageID != 10 {
+		t.Fatalf("the answer replies to %+v, want 10", answer.ReplyParameters)
+	}
+}

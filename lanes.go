@@ -112,6 +112,24 @@ func (l *lanes) push(ctx context.Context, key string, next job) bool {
 	}
 }
 
+func (l *lanes) later(ctx context.Context, key string, delay time.Duration, next job) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.stopped {
+		return false
+	}
+	l.workers.Go(func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+			l.push(ctx, key, next)
+		}
+	})
+	return true
+}
+
 func (l *lanes) stop() {
 	l.mu.Lock()
 	l.stopped = true

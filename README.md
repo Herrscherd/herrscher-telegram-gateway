@@ -86,7 +86,8 @@ Drafts are private chats only, so in a group the gateway posts one message and
 edits it at most every three seconds, then edits it into the final answer.
 
 Each turn answers the message that started it, even when more messages arrive
-while it runs. The prompt gets a 👀 reaction while its turn runs. It is cleared when the turn
+while it runs: a turn finds its message by author and text, and a message the
+host drops before its turn starts leaves the queue by the same match. The prompt gets a 👀 reaction while its turn runs. It is cleared when the turn
 completes, swapped for 💔 when the turn failed, and a failed or stopped turn
 also says so in its last line. A rate limit from Telegram (`retry_after`) is
 waited out.
@@ -123,10 +124,12 @@ then handed over as a `file://` path. A file over 10 MiB is skipped before it is
 downloaded, and a file name is cut to 120 bytes. The manifest declares no attachment host, so the host never fetches
 a Telegram URL itself.
 
-Not handled yet: an album arrives as one message per photo, and each one becomes
-its own turn. Grouping them by `media_group_id` is the recorded follow-up. The
-list of file types the agent can read is a copy of the host's, until the
-contracts module exports it (Herrscherd/herrscher-contracts#67).
+An album arrives as one message per item. The gateway gathers the items that
+share a `media_group_id` for a second and hands them over as one message: the
+caption of the album, and every file in it.
+
+Which files the agent can read is decided by `contracts.ModelReadable`, the same
+rule the host applies, so the gateway never downloads a file the host drops.
 
 ## Texts
 

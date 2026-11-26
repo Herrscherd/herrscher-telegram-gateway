@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -41,27 +40,8 @@ type incomingFile struct {
 	size        int64
 }
 
-func readableTypes() []string {
-	return []string{
-		"application/pdf", "application/json", "application/xml", "application/toml",
-		"application/x-yaml", "application/yaml",
-	}
-}
-
-func readableExtensions() []string {
-	return []string{
-		".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".pdf", ".txt", ".md", ".markdown",
-		".csv", ".tsv", ".log", ".json", ".yaml", ".yml", ".toml", ".xml",
-	}
-}
-
 func (f incomingFile) readable() bool {
-	if f.contentType == "" {
-		return slices.Contains(readableExtensions(), strings.ToLower(filepath.Ext(f.name)))
-	}
-	kind, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(f.contentType)), ";")
-	kind = strings.TrimSpace(kind)
-	return strings.HasPrefix(kind, "image/") || strings.HasPrefix(kind, "text/") || slices.Contains(readableTypes(), kind)
+	return contracts.ModelReadable(contracts.Attachment{Filename: f.name, ContentType: f.contentType})
 }
 
 func filesOf(msg *message) []incomingFile {
