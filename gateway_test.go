@@ -256,6 +256,26 @@ func TestEachTurnRepliesToTheMessageThatStartedIt(t *testing.T) {
 	}
 }
 
+func TestARetypedPromptAfterAnAbandonedCopyRepliesToTheNewOne(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.live("tg-42", "42")
+	gateway := startGateway(t, fake, ctrl, nil)
+	conv := contracts.Conversation{Gateway: gatewayKind, ID: "42"}
+
+	fake.push(privateText(1, 10, testOwner, "continue"), privateText(2, 11, testOwner, "continue"))
+	ctrl.waitFor(t, "both copies", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 2 })
+	settle(t, gateway, conv.ID)
+	gateway.EmitTo(conv, contracts.Event{T: eventAbandoned})
+	gateway.EmitTo(conv, humanAsking("continue"))
+	gateway.EmitTo(conv, contracts.Event{T: eventReply, Done: true, Text: "going on"})
+
+	answer := decodeCall[outgoing](t, fake.waitCalls(t, "sendMessage", 1)[0])
+	if answer.ReplyParameters == nil || answer.ReplyParameters.MessageID != 11 {
+		t.Fatalf("the answer replies to %+v, want 11", answer.ReplyParameters)
+	}
+}
+
 func TestAPrivateTurnStreamsADraftThenRepliesWithEntities(t *testing.T) {
 	fake := newFakeTelegram(t)
 	ctrl := newFakeControl()

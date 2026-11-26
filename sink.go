@@ -70,6 +70,9 @@ func (s *sink) apply(ctx context.Context, event contracts.Event) {
 			s.turn.text = ""
 		}
 	case eventAbandoned:
+		if s.turn == nil && len(s.prompts) > 0 {
+			s.prompts = s.prompts[1:]
+		}
 		s.abandon(ctx)
 	case eventReply:
 		if event.Done {

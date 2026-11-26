@@ -124,7 +124,9 @@ downloaded, and a file name is cut to 120 bytes. The manifest declares no attach
 a Telegram URL itself.
 
 Not handled yet: an album arrives as one message per photo, and each one becomes
-its own turn. Grouping them by `media_group_id` is the recorded follow-up.
+its own turn. Grouping them by `media_group_id` is the recorded follow-up. The
+list of file types the agent can read is a copy of the host's, until the
+contracts module exports it (Herrscherd/herrscher-contracts#67).
 
 ## Texts
 
