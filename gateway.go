@@ -258,20 +258,20 @@ func (g *Gateway) EmitTo(conv contracts.Conversation, event contracts.Event) {
 // render into.
 func (g *Gateway) Emit(contracts.Event) {}
 
-// Post sends text as a new message in conv, split at the Telegram limit. It
-// returns the id of the first message sent.
+// Post sends text as a new message in conv, its Markdown rendered as entities and
+// split at the Telegram limit. It returns the id of the first message sent.
 func (g *Gateway) Post(ctx context.Context, conv contracts.Conversation, text string) (contracts.MessageID, error) {
-	return g.send(ctx, conv, 0, plain(text))
+	return g.send(ctx, conv, 0, formatMarkdown(text))
 }
 
-// Reply sends text as an answer to replyTo in conv. A reply to a message that
-// is gone is sent as a plain message.
+// Reply sends text as an answer to replyTo in conv, its Markdown rendered as
+// entities. A reply to a message that is gone is sent as a plain message.
 func (g *Gateway) Reply(ctx context.Context, conv contracts.Conversation, replyTo contracts.MessageID, text string) (contracts.MessageID, error) {
 	target, err := parseMessageID(string(replyTo))
 	if err != nil {
 		return "", err
 	}
-	return g.send(ctx, conv, target, plain(text))
+	return g.send(ctx, conv, target, formatMarkdown(text))
 }
 
 func (g *Gateway) send(ctx context.Context, conv contracts.Conversation, replyTo int64, text formatted) (contracts.MessageID, error) {

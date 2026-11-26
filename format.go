@@ -2,7 +2,9 @@ package telegram
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf16"
+	"unicode/utf8"
 )
 
 const (
@@ -114,16 +116,19 @@ func inlineMarks() []inlineMark {
 }
 
 func (f *formatter) inline(text string) {
+	insideWord := false
 	for text != "" {
 		consumed := f.link(text)
 		if consumed == 0 {
-			consumed = f.marked(text)
+			consumed = f.marked(text, insideWord)
 		}
 		if consumed == 0 {
 			next := nextSpecial(text[1:]) + 1
 			f.write(text[:next])
 			consumed = next
 		}
+		last, _ := utf8.DecodeLastRuneInString(text[:consumed])
+		insideWord = isWordRune(last)
 		text = text[consumed:]
 	}
 }
@@ -136,7 +141,7 @@ func nextSpecial(text string) int {
 	return index
 }
 
-func (f *formatter) marked(text string) int {
+func (f *formatter) marked(text string, insideWord bool) int {
 	for _, mark := range inlineMarks() {
 		if !strings.HasPrefix(text, mark.open) {
 			continue
@@ -146,7 +151,7 @@ func (f *formatter) marked(text string) int {
 		if closing <= 0 || !tight(rest[:closing]) {
 			continue
 		}
-		if mark.kind != entityCode && wordBoundaryNeeded(mark.open) && !boundaryAfter(rest[closing+len(mark.open):]) {
+		if mark.kind != entityCode && wordBoundaryNeeded(mark.open) && (insideWord || !boundaryAfter(rest[closing+len(mark.open):])) {
 			continue
 		}
 		f.span(mark.kind, rest[:closing], entity{})
@@ -165,11 +170,12 @@ func boundaryAfter(rest string) bool {
 	if rest == "" {
 		return true
 	}
-	return !isWordByte(rest[0])
+	next, _ := utf8.DecodeRuneInString(rest)
+	return !isWordRune(next)
 }
 
-func isWordByte(char byte) bool {
-	return char == '_' || (char >= '0' && char <= '9') || (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z')
+func isWordRune(char rune) bool {
+	return char == '_' || unicode.IsLetter(char) || unicode.IsDigit(char)
 }
 
 func (f *formatter) link(text string) int {

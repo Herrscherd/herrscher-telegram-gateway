@@ -600,3 +600,17 @@ func TestStopIsNotHeldBehindAnAlbum(t *testing.T) {
 		t.Fatal("a message went past the held album")
 	}
 }
+
+func TestAPostFromTheHostIsFormattedNotLiteral(t *testing.T) {
+	fake := newFakeTelegram(t)
+	gateway := startGateway(t, fake, nil, nil)
+
+	if _, err := gateway.Post(t.Context(), contracts.Conversation{Gateway: gatewayKind, ID: "42"}, "session **tg-42** started in `~/work`"); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+
+	sent := decodeCall[outgoing](t, fake.waitCalls(t, "sendMessage", 1)[0])
+	if sent.Text != "session tg-42 started in ~/work" || len(sent.Entities) != 2 || sent.Entities[0].Type != entityBold || sent.Entities[1].Type != entityCode {
+		t.Fatalf("sent %+v", sent)
+	}
+}
