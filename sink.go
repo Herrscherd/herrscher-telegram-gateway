@@ -27,9 +27,20 @@ const (
 	noReplyToNobody = 0
 )
 
+type notedPrompt struct {
+	id     int64
+	author string
+	text   string
+}
+
+func (n notedPrompt) asks(author, text string) bool {
+	return n.author == author && n.text == text
+}
+
 type turnView struct {
 	text      string
 	draftID   int64
+	asked     notedPrompt
 	prompt    int64
 	live      int64
 	shown     string
@@ -42,7 +53,7 @@ type sink struct {
 	msgs    messages
 	log     *slog.Logger
 	now     func() time.Time
-	prompts []int64
+	prompts []notedPrompt
 	acked   int64
 	turn    *turnView
 	turns   int64
@@ -51,7 +62,7 @@ type sink struct {
 func (s *sink) apply(ctx context.Context, event contracts.Event) {
 	switch event.T {
 	case eventHuman:
-		s.begin(ctx)
+		s.begin(ctx, event.Who, event.Text)
 	case eventChunk:
 		s.chunk(ctx, event.Text)
 	case eventReset:
@@ -60,7 +71,6 @@ func (s *sink) apply(ctx context.Context, event contracts.Event) {
 		}
 	case eventAbandoned:
 		s.abandon(ctx)
-		s.nextPrompt()
 	case eventReply:
 		if event.Done {
 			s.finish(ctx, event)
@@ -68,30 +78,31 @@ func (s *sink) apply(ctx context.Context, event contracts.Event) {
 	}
 }
 
-func (s *sink) noteUser(ctx context.Context, messageID int64) {
-	if s.turn != nil && s.turn.prompt == 0 {
-		s.turn.prompt = messageID
+func (s *sink) noteUser(ctx context.Context, noted notedPrompt) {
+	if s.turn != nil && s.turn.prompt == 0 && noted.asks(s.turn.asked.author, s.turn.asked.text) {
+		s.turn.prompt = noted.id
 		s.ack(ctx)
 		return
 	}
 	if len(s.prompts) == laneDepth {
 		s.prompts = s.prompts[1:]
 	}
-	s.prompts = append(s.prompts, messageID)
+	s.prompts = append(s.prompts, noted)
 }
 
-func (s *sink) nextPrompt() int64 {
-	if len(s.prompts) == 0 {
-		return 0
+func (s *sink) claim(author, text string) int64 {
+	for index, noted := range s.prompts {
+		if noted.asks(author, text) {
+			s.prompts = s.prompts[index+1:]
+			return noted.id
+		}
 	}
-	next := s.prompts[0]
-	s.prompts = s.prompts[1:]
-	return next
+	return 0
 }
 
-func (s *sink) begin(ctx context.Context) {
+func (s *sink) begin(ctx context.Context, author, text string) {
 	s.turns++
-	s.turn = &turnView{draftID: s.turns, prompt: s.nextPrompt()}
+	s.turn = &turnView{draftID: s.turns, asked: notedPrompt{author: author, text: text}, prompt: s.claim(author, text)}
 	s.ack(ctx)
 }
 
@@ -122,7 +133,7 @@ func (s *sink) swapAck(ctx context.Context, emoji string) {
 
 func (s *sink) chunk(ctx context.Context, text string) {
 	if s.turn == nil {
-		s.begin(ctx)
+		s.begin(ctx, "", "")
 	}
 	s.turn.text += text
 	if s.now().Before(s.turn.nextFlush) {

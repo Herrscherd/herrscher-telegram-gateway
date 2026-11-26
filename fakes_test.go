@@ -78,16 +78,17 @@ func decodeCall[T any](t *testing.T, call apiCall) T {
 }
 
 type fakeTelegram struct {
-	t       *testing.T
-	server  *httptest.Server
-	mu      sync.Mutex
-	calls   []apiCall
-	updates []update
-	nextID  int64
-	files   map[string]string
-	fail    map[string]int
-	texts   map[int64]string
-	change  *signal
+	t        *testing.T
+	server   *httptest.Server
+	mu       sync.Mutex
+	calls    []apiCall
+	updates  []update
+	nextID   int64
+	files    map[string]string
+	fail     map[string]int
+	texts    map[int64]string
+	conflict string
+	change   *signal
 }
 
 func newFakeTelegram(t *testing.T) *fakeTelegram {
@@ -130,7 +131,11 @@ func (f *fakeTelegram) serve(writer http.ResponseWriter, request *http.Request) 
 		if code != 0 {
 			defer f.change.bump()
 			writer.WriteHeader(code)
-			f.write(writer, `{"ok":false,"error_code":`+strconv.Itoa(code)+`,"description":"Conflict: terminated by other getUpdates request"}`)
+			raw, err := json.Marshal(f.conflict)
+			if err != nil {
+				f.t.Errorf("encode the conflict: %v", err)
+			}
+			f.write(writer, `{"ok":false,"error_code":`+strconv.Itoa(code)+`,"description":`+string(raw)+`}`)
 			return
 		}
 		f.answer(writer, f.drain(request.Context()))

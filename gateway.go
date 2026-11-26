@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,12 +20,14 @@ const (
 	backoffGrowth      = 2
 	inboundLane        = "in/"
 	outboundLane       = "out/"
+	webhookWord        = "webhook"
 )
 
 var (
 	errNoChoices   = errors.New("telegram menu: no choices")
 	errUnsupported = errors.New("telegram: reaction not offered by telegram")
 	errWebhookSet  = errors.New("telegram: a webhook is set on this bot, so updates cannot be polled; remove it with deleteWebhook")
+	errOtherPoller = errors.New("telegram: another process polls this bot with the same token")
 )
 
 var (
@@ -158,8 +161,12 @@ func (g *Gateway) poll(ctx context.Context) {
 
 func (g *Gateway) notePollFailure(err error, wait time.Duration) {
 	if failure, ok := errors.AsType[*apiError](err); ok && failure.Code == http.StatusConflict {
-		g.log.Error("telegram updates refused", "err", errWebhookSet, "retry_in", wait)
-		g.setFault(errWebhookSet)
+		cause := errOtherPoller
+		if strings.Contains(strings.ToLower(failure.Description), webhookWord) {
+			cause = errWebhookSet
+		}
+		g.log.Error("telegram updates refused", "err", cause, "retry_in", wait)
+		g.setFault(cause)
 		return
 	}
 	g.log.Warn("telegram updates failed", "err", err, "retry_in", wait)
@@ -213,9 +220,9 @@ func (g *Gateway) onStopped(ctx context.Context, stopped *generationStopped) {
 	})
 }
 
-func (g *Gateway) noteUser(ctx context.Context, conv chatRef, messageID int64) {
+func (g *Gateway) noteUser(ctx context.Context, conv chatRef, noted notedPrompt) {
 	target := g.sinkFor(conv)
-	g.lanes.push(ctx, outboundLane+conv.String(), func(ctx context.Context) { target.noteUser(ctx, messageID) })
+	g.lanes.push(ctx, outboundLane+conv.String(), func(ctx context.Context) { target.noteUser(ctx, noted) })
 }
 
 // EmitTo renders one live turn event into the conversation the host routed it

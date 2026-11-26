@@ -47,7 +47,7 @@ type router struct {
 	menus    *menuTable
 	files    stager
 	ctrl     func() contracts.SessionControl
-	noteUser func(ctx context.Context, conv chatRef, messageID int64)
+	noteUser func(ctx context.Context, conv chatRef, noted notedPrompt)
 
 	mu      sync.Mutex
 	pending map[string]pendingBind
@@ -133,7 +133,7 @@ func (r *router) deliver(ctx context.Context, ctrl contracts.SessionControl, con
 		return false
 	}
 	if messageID, err := parseMessageID(string(inbound.MessageID)); err == nil {
-		r.noteUser(ctx, conv, messageID)
+		r.noteUser(ctx, conv, notedPrompt{id: messageID, author: inbound.Author, text: inbound.Text})
 	}
 	return true
 }

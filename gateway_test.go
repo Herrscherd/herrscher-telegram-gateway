@@ -28,6 +28,10 @@ func pressOn(updateID, from int64, on *message, data string) update {
 	return update{UpdateID: updateID, CallbackQuery: &callbackQuery{ID: "q" + formatID(updateID), From: user{ID: from}, Message: on, Data: data}}
 }
 
+func humanAsking(text string) contracts.Event {
+	return contracts.Event{T: eventHuman, Who: "ana", Text: text}
+}
+
 func laneKeys(gateway *Gateway) []string {
 	gateway.lanes.mu.Lock()
 	defer gateway.lanes.mu.Unlock()
@@ -228,19 +232,24 @@ func TestEachTurnRepliesToTheMessageThatStartedIt(t *testing.T) {
 
 	fake.push(privateText(1, 10, testOwner, "first"))
 	ctrl.waitFor(t, "the first message", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 1 })
-	gateway.EmitTo(conv, contracts.Event{T: eventHuman})
-	fake.push(privateText(2, 11, testOwner, "second"), privateText(3, 12, testOwner, "third"))
-	ctrl.waitFor(t, "the queued messages", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 3 })
-	for _, text := range []string{"answer one", "answer two", "answer three"} {
-		if text != "answer one" {
-			gateway.EmitTo(conv, contracts.Event{T: eventHuman})
-		}
-		gateway.EmitTo(conv, contracts.Event{T: eventReply, Done: true, Text: text})
+	gateway.EmitTo(conv, humanAsking("first"))
+	fake.push(privateText(2, 11, testOwner, "refused by the budget"), privateText(3, 12, testOwner, "second"), privateText(4, 13, testOwner, "third"))
+	ctrl.waitFor(t, "the queued messages", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 4 })
+	gateway.EmitTo(conv, contracts.Event{T: eventReply, Done: true, Text: "answer one"})
+	for _, asked := range []string{"second", "from the terminal", "third"} {
+		gateway.EmitTo(conv, humanAsking(asked))
+		gateway.EmitTo(conv, contracts.Event{T: eventReply, Done: true, Text: "answer to " + asked})
 	}
 
-	sent := fake.waitCalls(t, "sendMessage", 3)
-	for index, want := range []int64{10, 11, 12} {
+	sent := fake.waitCalls(t, "sendMessage", 4)
+	for index, want := range []int64{10, 12, 0, 13} {
 		out := decodeCall[outgoing](t, sent[index])
+		if want == 0 {
+			if out.ReplyParameters != nil {
+				t.Fatalf("answer %d to a prompt from elsewhere replies to %d", index, out.ReplyParameters.MessageID)
+			}
+			continue
+		}
 		if out.ReplyParameters == nil || out.ReplyParameters.MessageID != want {
 			t.Fatalf("answer %d = %+v, want a reply to %d", index, out, want)
 		}
@@ -254,9 +263,10 @@ func TestAPrivateTurnStreamsADraftThenRepliesWithEntities(t *testing.T) {
 	gateway := startGateway(t, fake, ctrl, nil)
 	conv := contracts.Conversation{Gateway: gatewayKind, ID: "42"}
 
+	gateway.EmitTo(conv, humanAsking("go"))
+	settle(t, gateway, conv.ID)
 	fake.push(privateText(1, 10, testOwner, "go"))
 	ctrl.waitFor(t, "the message", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 1 })
-	gateway.EmitTo(conv, contracts.Event{T: eventHuman})
 	gateway.EmitTo(conv, contracts.Event{T: eventChunk, Text: "working on **it**"})
 	gateway.EmitTo(conv, contracts.Event{T: eventReply, Done: true, Text: "Done with **it**"})
 
@@ -267,6 +277,9 @@ func TestAPrivateTurnStreamsADraftThenRepliesWithEntities(t *testing.T) {
 	answer := decodeCall[outgoing](t, fake.waitCalls(t, "sendMessage", 1)[0])
 	if answer.Text != "Done with it" || len(answer.Entities) != 1 || answer.Entities[0] != (entity{Type: entityBold, Offset: 10, Length: 2}) {
 		t.Fatalf("answer = %+v", answer)
+	}
+	if answer.ReplyParameters == nil || answer.ReplyParameters.MessageID != 10 {
+		t.Fatalf("a turn that began before its message was noted does not reply to it: %+v", answer)
 	}
 	calls := fake.waitCalls(t, "setMessageReaction", 2)
 	acked, cleared := decodeCall[reaction](t, calls[0]), decodeCall[reaction](t, calls[1])
@@ -419,13 +432,46 @@ func TestAReactionOutsideTheTelegramSetIsMappedOrRefused(t *testing.T) {
 	}
 }
 
-func TestAWebhookOnTheBotFailsTheLivenessProbe(t *testing.T) {
-	fake := newFakeTelegram(t)
-	fake.fail["getUpdates"] = http.StatusConflict
-	gateway := startGateway(t, fake, newFakeControl(), nil)
+func TestARefusedPollFailsTheLivenessProbeWithItsCause(t *testing.T) {
+	cases := []struct {
+		name        string
+		description string
+		want        error
+	}{
+		{"webhook", "Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first", errWebhookSet},
+		{"second poller", "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running", errOtherPoller},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeTelegram(t)
+			fake.fail["getUpdates"] = http.StatusConflict
+			fake.conflict = tc.description
+			gateway := startGateway(t, fake, newFakeControl(), nil)
 
-	waitUntil(t, "the webhook fault", fake.change, func() bool { return gateway.currentFault() != nil })
-	if _, err := gateway.Probe(t.Context()); !errors.Is(err, errWebhookSet) {
-		t.Fatalf("probe = %v", err)
+			waitUntil(t, "the poll fault", fake.change, func() bool { return gateway.currentFault() != nil })
+			if _, err := gateway.Probe(t.Context()); !errors.Is(err, tc.want) {
+				t.Fatalf("probe = %v", err)
+			}
+		})
+	}
+}
+
+func TestAFileTheAgentCannotReadIsNotFetched(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.live("tg-42", "42")
+	startGateway(t, fake, ctrl, nil)
+
+	archive := privateText(1, 10, testOwner, "")
+	archive.Message.Caption = "see attached"
+	archive.Message.Document = &document{FileID: "zip", FileName: "bundle.zip", MimeType: "application/zip", FileSize: 100}
+	fake.push(archive)
+
+	ctrl.waitFor(t, "the caption", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 1 })
+	if got := ctrl.submitted["tg-42"][0]; got.Text != "see attached" || len(got.Attachments) != 0 {
+		t.Fatalf("inbound = %+v", got)
+	}
+	if len(fake.callsTo("getFile")) != 0 || len(fake.callsTo("sendMessage")) != 1 {
+		t.Fatal("an unreadable file was fetched or not explained")
 	}
 }

@@ -46,8 +46,8 @@
   },
   {
     "id": "telegram.repo.started",
-    "description": "Confirmation that a session started on a repository",
-    "other": "Session démarrée sur {{.Repo}}."
+    "description": "Toast confirming a repository pick, before the session exists",
+    "other": "Démarrage d'une session sur {{.Repo}}."
   },
   {
     "id": "telegram.menu.denied",
@@ -121,7 +121,7 @@
   },
   {
     "id": "telegram.file.refused",
-    "description": "A message whose only file could not be handed over",
+    "description": "A file of the message could not be handed to the agent",
     "other": "Ce fichier n'a pas été accepté : seuls les images, les PDF et les fichiers texte jusqu'à 10 Mio parviennent à l'agent."
   }
 ]

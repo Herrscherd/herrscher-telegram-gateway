@@ -24,12 +24,13 @@ const (
 )
 
 var (
-	errRequest      = errors.New("telegram request could not be built")
-	errTransport    = errors.New("telegram unreachable")
-	errBadResponse  = errors.New("telegram answered with an unreadable response")
-	errBadFilePath  = errors.New("telegram gave a file path that is not a relative path")
-	errFileTooLarge = errors.New("file is bigger than the cap")
-	errFileStatus   = errors.New("telegram refused the file download")
+	errRequest        = errors.New("telegram request could not be built")
+	errTransport      = errors.New("telegram unreachable")
+	errBadResponse    = errors.New("telegram answered with an unreadable response")
+	errBadFilePath    = errors.New("telegram gave a file path that is not a relative path")
+	errFileTooLarge   = errors.New("file is bigger than the cap")
+	errUnreadableType = errors.New("file is not a type the agent can read")
+	errFileStatus     = errors.New("telegram refused the file download")
 )
 
 type apiError struct {

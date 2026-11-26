@@ -72,7 +72,8 @@ exists. Only the person who asked can pick. With a single repository the
 session starts at once.
 
 A message with no text and no usable file (a sticker, a voice note, a location)
-is ignored. A file the agent cannot be handed gets one line saying so.
+is ignored. A file the agent cannot read (not an image, a PDF or a text file, or
+over 10 MiB) is not downloaded, and gets one line saying so.
 
 ## The live turn
 
