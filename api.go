@@ -20,6 +20,7 @@ const (
 	pollTimeoutSecond = 50
 	requestSlack      = 20 * time.Second
 	reactionEmojiType = "emoji"
+	notModifiedReason = "message is not modified"
 )
 
 var (
@@ -135,6 +136,11 @@ func (r apiResponse) failure(method string) error {
 	return failure
 }
 
+func unmodified(err error) bool {
+	failure, ok := errors.AsType[*apiError](err)
+	return ok && failure.Code == http.StatusBadRequest && strings.Contains(failure.Description, notModifiedReason)
+}
+
 func retryAfter(err error) (time.Duration, bool) {
 	failure, ok := errors.AsType[*apiError](err)
 	if !ok || failure.RetryAfter <= 0 {
@@ -153,6 +159,7 @@ func (b *botAPI) getUpdates(ctx context.Context, offset int64) ([]update, error)
 	var updates []update
 	request := updatesRequest{
 		Offset:         offset,
+		Limit:          updatesPerPoll,
 		Timeout:        pollTimeoutSecond,
 		AllowedUpdates: []string{"message", "callback_query", "stopped_message_generation"},
 	}

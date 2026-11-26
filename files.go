@@ -21,7 +21,8 @@ const (
 	stagingRootName    = "herrscher-attachments"
 	photoName          = "photo.jpg"
 	photoType          = "image/jpeg"
-	fileNameMaxRunes   = 80
+	fileNameMaxBytes   = 120
+	extensionMaxBytes  = 16
 )
 
 type stager struct {
@@ -136,9 +137,22 @@ func safeFileName(name, remotePath string) string {
 		return "file"
 	}
 	ext := filepath.Ext(cleaned)
-	stem := []rune(strings.TrimSuffix(cleaned, ext))
-	if keep := fileNameMaxRunes - len([]rune(ext)); len(stem) > keep && keep > 0 {
-		stem = stem[:keep]
+	if len(ext) > extensionMaxBytes {
+		ext = ""
 	}
-	return string(stem) + ext
+	return clipBytes(strings.TrimSuffix(cleaned, filepath.Ext(cleaned)), fileNameMaxBytes-len(ext)) + ext
+}
+
+func clipBytes(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	cut := 0
+	for index := range text {
+		if index > limit {
+			break
+		}
+		cut = index
+	}
+	return text[:cut]
 }

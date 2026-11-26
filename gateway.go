@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -23,6 +24,7 @@ const (
 var (
 	errNoChoices   = errors.New("telegram menu: no choices")
 	errUnsupported = errors.New("telegram: reaction not offered by telegram")
+	errWebhookSet  = errors.New("telegram: a webhook is set on this bot, so updates cannot be polled; remove it with deleteWebhook")
 )
 
 var (
@@ -53,6 +55,7 @@ type Gateway struct {
 	sinks   map[string]*sink
 	polling bool
 	closed  bool
+	fault   error
 	poller  sync.WaitGroup
 }
 
@@ -140,10 +143,11 @@ func (g *Gateway) poll(ctx context.Context) {
 				wait = backoff
 				backoff = min(backoff*backoffGrowth, pollBackoffCeiling)
 			}
-			g.log.Warn("telegram updates failed", "err", err, "retry_in", wait)
+			g.notePollFailure(err, wait)
 			pause(ctx, wait)
 			continue
 		}
+		g.setFault(nil)
 		backoff = pollBackoffFloor
 		for _, next := range updates {
 			offset = max(offset, next.UpdateID+1)
@@ -152,11 +156,36 @@ func (g *Gateway) poll(ctx context.Context) {
 	}
 }
 
-func (g *Gateway) dispatch(ctx context.Context, next update) {
-	key := laneKeyOf(next)
-	if key == "" {
+func (g *Gateway) notePollFailure(err error, wait time.Duration) {
+	if failure, ok := errors.AsType[*apiError](err); ok && failure.Code == http.StatusConflict {
+		g.log.Error("telegram updates refused", "err", errWebhookSet, "retry_in", wait)
+		g.setFault(errWebhookSet)
 		return
 	}
+	g.log.Warn("telegram updates failed", "err", err, "retry_in", wait)
+}
+
+func (g *Gateway) setFault(err error) {
+	g.mu.Lock()
+	g.fault = err
+	g.mu.Unlock()
+}
+
+func (g *Gateway) currentFault() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.fault
+}
+
+func (g *Gateway) dispatch(ctx context.Context, next update) {
+	if !g.router.accepts(next) {
+		return
+	}
+	if stopped := next.StoppedGeneration; stopped != nil {
+		g.onStopped(ctx, stopped)
+		return
+	}
+	key := laneKeyOf(next)
 	if !g.lanes.push(ctx, inboundLane+key, func(ctx context.Context) { g.router.onUpdate(ctx, next) }) {
 		g.log.Warn("update dropped, the gateway is stopping", "update", next.UpdateID)
 	}
@@ -172,6 +201,16 @@ func (g *Gateway) sinkFor(conv chatRef) *sink {
 		g.sinks[key] = found
 	}
 	return found
+}
+
+func (g *Gateway) onStopped(ctx context.Context, stopped *generationStopped) {
+	conv := chatRef{chat: stopped.Chat.ID, thread: stopped.ThreadID}
+	target := g.sinkFor(conv)
+	g.lanes.push(ctx, outboundLane+conv.String(), func(context.Context) {
+		if target.stoppedDraft(stopped.DraftID) {
+			g.router.interrupt(conv)
+		}
+	})
 }
 
 func (g *Gateway) noteUser(ctx context.Context, conv chatRef, messageID int64) {
@@ -301,8 +340,12 @@ func (g *Gateway) Notify(ctx context.Context, conv contracts.Conversation, lang 
 	return sent, nil
 }
 
-// Probe measures one round trip to the Bot API, for liveness.
+// Probe measures one round trip to the Bot API, for liveness. It fails while
+// Telegram refuses to hand out updates because a webhook is set.
 func (g *Gateway) Probe(ctx context.Context) (int64, error) {
+	if fault := g.currentFault(); fault != nil {
+		return 0, fault
+	}
 	start := g.now()
 	if _, err := g.api.getMe(ctx); err != nil {
 		return 0, err

@@ -148,6 +148,7 @@ type callbackAnswer struct {
 
 type updatesRequest struct {
 	Offset         int64    `json:"offset,omitempty"`
+	Limit          int      `json:"limit"`
 	Timeout        int      `json:"timeout"`
 	AllowedUpdates []string `json:"allowed_updates"`
 }

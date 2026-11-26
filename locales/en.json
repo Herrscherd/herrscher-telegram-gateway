@@ -118,5 +118,10 @@
     "id": "telegram.notice.no_detail",
     "description": "An unexpected failure without detail",
     "other": "No detail was given."
+  },
+  {
+    "id": "telegram.file.refused",
+    "description": "A message whose only file could not be handed over",
+    "other": "This file was not accepted: only images, PDFs and text files up to 10 MiB reach the agent."
   }
 ]

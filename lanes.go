@@ -3,58 +3,95 @@ package telegram
 import (
 	"context"
 	"sync"
+	"time"
 )
 
-const laneDepth = 256
+const (
+	updatesPerPoll = 100
+	laneDepth      = updatesPerPoll
+	laneIdleAfter  = 5 * time.Minute
+)
 
 type lifetime func() context.Context
 
 type job func(ctx context.Context)
 
+type lane struct {
+	jobs    chan job
+	senders int
+}
+
 type lanes struct {
 	mu      sync.Mutex
-	queues  map[string]chan job
+	queues  map[string]*lane
 	stopped bool
+	idle    time.Duration
 	workers sync.WaitGroup
 }
 
 func newLanes() *lanes {
-	return &lanes{queues: make(map[string]chan job)}
+	return &lanes{queues: make(map[string]*lane), idle: laneIdleAfter}
 }
 
-func (l *lanes) queue(ctx context.Context, key string) (chan job, bool) {
+func (l *lanes) acquire(ctx context.Context, key string) (*lane, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.stopped {
 		return nil, false
 	}
-	queue, found := l.queues[key]
-	if !found {
-		queue = make(chan job, laneDepth)
-		l.queues[key] = queue
-		l.workers.Go(func() { work(ctx, queue) })
+	found, ok := l.queues[key]
+	if !ok {
+		found = &lane{jobs: make(chan job, laneDepth)}
+		l.queues[key] = found
+		l.workers.Go(func() { l.work(ctx, key, found) })
 	}
-	return queue, true
+	found.senders++
+	return found, true
 }
 
-func work(ctx context.Context, queue chan job) {
+func (l *lanes) release(target *lane) {
+	l.mu.Lock()
+	target.senders--
+	l.mu.Unlock()
+}
+
+func (l *lanes) work(ctx context.Context, key string, target *lane) {
+	timer := time.NewTimer(l.idle)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case next := <-queue:
+		case next := <-target.jobs:
 			next(ctx)
+			timer.Reset(l.idle)
+		case <-timer.C:
+			if l.retire(key, target) {
+				return
+			}
+			timer.Reset(l.idle)
 		}
 	}
 }
 
+func (l *lanes) retire(key string, target *lane) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if target.senders > 0 || len(target.jobs) > 0 {
+		return false
+	}
+	delete(l.queues, key)
+	return true
+}
+
 func (l *lanes) offer(ctx context.Context, key string, next job) bool {
-	queue, open := l.queue(ctx, key)
+	target, open := l.acquire(ctx, key)
 	if !open {
 		return false
 	}
+	defer l.release(target)
 	select {
-	case queue <- next:
+	case target.jobs <- next:
 		return true
 	default:
 		return false
@@ -62,12 +99,13 @@ func (l *lanes) offer(ctx context.Context, key string, next job) bool {
 }
 
 func (l *lanes) push(ctx context.Context, key string, next job) bool {
-	queue, open := l.queue(ctx, key)
+	target, open := l.acquire(ctx, key)
 	if !open {
 		return false
 	}
+	defer l.release(target)
 	select {
-	case queue <- next:
+	case target.jobs <- next:
 		return true
 	case <-ctx.Done():
 		return false

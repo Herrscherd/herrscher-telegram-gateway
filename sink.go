@@ -30,21 +30,22 @@ const (
 type turnView struct {
 	text      string
 	draftID   int64
+	prompt    int64
 	live      int64
 	shown     string
 	nextFlush time.Time
 }
 
 type sink struct {
-	conv  chatRef
-	api   bot
-	msgs  messages
-	log   *slog.Logger
-	now   func() time.Time
-	user  int64
-	acked int64
-	turn  *turnView
-	turns int64
+	conv    chatRef
+	api     bot
+	msgs    messages
+	log     *slog.Logger
+	now     func() time.Time
+	prompts []int64
+	acked   int64
+	turn    *turnView
+	turns   int64
 }
 
 func (s *sink) apply(ctx context.Context, event contracts.Event) {
@@ -59,6 +60,7 @@ func (s *sink) apply(ctx context.Context, event contracts.Event) {
 		}
 	case eventAbandoned:
 		s.abandon(ctx)
+		s.nextPrompt()
 	case eventReply:
 		if event.Done {
 			s.finish(ctx, event)
@@ -67,27 +69,45 @@ func (s *sink) apply(ctx context.Context, event contracts.Event) {
 }
 
 func (s *sink) noteUser(ctx context.Context, messageID int64) {
-	s.user = messageID
-	if s.turn != nil && s.acked == 0 {
+	if s.turn != nil && s.turn.prompt == 0 {
+		s.turn.prompt = messageID
 		s.ack(ctx)
+		return
 	}
+	if len(s.prompts) == laneDepth {
+		s.prompts = s.prompts[1:]
+	}
+	s.prompts = append(s.prompts, messageID)
+}
+
+func (s *sink) nextPrompt() int64 {
+	if len(s.prompts) == 0 {
+		return 0
+	}
+	next := s.prompts[0]
+	s.prompts = s.prompts[1:]
+	return next
 }
 
 func (s *sink) begin(ctx context.Context) {
 	s.turns++
-	s.turn = &turnView{draftID: s.turns}
+	s.turn = &turnView{draftID: s.turns, prompt: s.nextPrompt()}
 	s.ack(ctx)
 }
 
 func (s *sink) ack(ctx context.Context) {
-	if s.user == 0 {
+	if s.turn.prompt == 0 {
 		return
 	}
-	if err := s.api.setMessageReaction(ctx, s.conv.chat, s.user, ackEmoji); err != nil {
+	if err := s.api.setMessageReaction(ctx, s.conv.chat, s.turn.prompt, ackEmoji); err != nil {
 		s.log.Warn("ack reaction failed", "err", err)
 		return
 	}
-	s.acked = s.user
+	s.acked = s.turn.prompt
+}
+
+func (s *sink) stoppedDraft(draftID int64) bool {
+	return s.turn != nil && s.conv.private() && s.turn.draftID == draftID
 }
 
 func (s *sink) swapAck(ctx context.Context, emoji string) {
@@ -137,8 +157,9 @@ func (s *sink) edit(ctx context.Context) {
 	} else {
 		err = s.api.editMessageText(ctx, textEdit{ChatID: s.conv.chat, MessageID: s.turn.live, Text: view.text, LinkPreview: noPreview()})
 	}
-	if err == nil {
+	if err == nil || unmodified(err) {
 		s.turn.shown = view.text
+		err = nil
 	}
 	s.turn.nextFlush = s.after(err, editInterval)
 }
@@ -167,18 +188,18 @@ func (s *sink) abandon(ctx context.Context) {
 
 func (s *sink) finish(ctx context.Context, event contracts.Event) {
 	parts := s.answer(event).split(messageMaxUnits)
-	live := int64(0)
+	shown := turnView{}
 	if s.turn != nil {
-		live = s.turn.live
+		shown = *s.turn
 	}
 	for index, part := range parts {
-		if index == 0 && live != 0 {
-			s.replace(ctx, live, part)
+		if index == 0 && shown.live != 0 {
+			s.replace(ctx, shown, part)
 			continue
 		}
 		replyTo := int64(noReplyToNobody)
 		if index == 0 {
-			replyTo = s.user
+			replyTo = shown.prompt
 		}
 		s.send(ctx, s.outgoing(part, replyTo))
 	}
@@ -210,13 +231,16 @@ func (s *sink) answer(event contracts.Event) formatted {
 	return formatMarkdown(body)
 }
 
-func (s *sink) replace(ctx context.Context, live int64, part formatted) {
-	edit := textEdit{ChatID: s.conv.chat, MessageID: live, Text: part.text, Entities: part.entities, LinkPreview: noPreview()}
+func (s *sink) replace(ctx context.Context, shown turnView, part formatted) {
+	if part.text == shown.shown && len(part.entities) == 0 {
+		return
+	}
+	edit := textEdit{ChatID: s.conv.chat, MessageID: shown.live, Text: part.text, Entities: part.entities, LinkPreview: noPreview()}
 	err := s.api.editMessageText(ctx, edit)
 	if wait, limited := retryAfter(err); limited && pause(ctx, wait) {
 		err = s.api.editMessageText(ctx, edit)
 	}
-	if err != nil {
+	if err != nil && !unmodified(err) {
 		s.log.Warn("final edit failed, the answer is sent anew", "err", err)
 		s.send(ctx, s.outgoing(part, noReplyToNobody))
 	}

@@ -18,7 +18,9 @@ herrscher plugin add github.com/Herrscherd/herrscher-telegram-gateway
 ```
 
 Create the bot with BotFather, keep its privacy mode on, and give the daemon its
-token through the environment.
+token. The bot must have no webhook: Telegram refuses to hand out updates by
+polling while one is set. The gateway then logs the cause and its liveness
+probe fails until the webhook is removed with `deleteWebhook`.
 
 ## Configuration
 
@@ -51,9 +53,14 @@ mentions it (`@name`, or `/command@name`) or that replies to one of its own
 messages. With BotFather's privacy mode on, Telegram does not deliver the rest
 anyway.
 
-The token travels only in the environment and in the request path to the Bot
-API. Every transport error is stripped of it before it reaches a log, and no
+Give the token through `TELEGRAM_BOT_TOKEN` or the private settings file, never
+on a command line. The gateway puts it only in the request path to the Bot API.
+Every transport error is stripped of it before it reaches a log, and no
 attachment URL carrying it is ever handed to the host.
+
+A message refused by the access list is dropped before any work is queued for
+it, so a stranger costs the daemon nothing. The stop button of a draft is only
+honoured from an allowed user and only for the draft of the turn still running.
 
 ## One session per conversation
 
@@ -63,6 +70,9 @@ that has no session asks which repository to work on, with one button per
 repository (the first 20), and the message is delivered once the session
 exists. Only the person who asked can pick. With a single repository the
 session starts at once.
+
+A message with no text and no usable file (a sticker, a voice note, a location)
+is ignored. A file the agent cannot be handed gets one line saying so.
 
 ## The live turn
 
@@ -74,7 +84,8 @@ prompt.
 Drafts are private chats only, so in a group the gateway posts one message and
 edits it at most every three seconds, then edits it into the final answer.
 
-The prompt gets a 👀 reaction while its turn runs. It is cleared when the turn
+Each turn answers the message that started it, even when more messages arrive
+while it runs. The prompt gets a 👀 reaction while its turn runs. It is cleared when the turn
 completes, swapped for 💔 when the turn failed, and a failed or stopped turn
 also says so in its last line. A rate limit from Telegram (`retry_after`) is
 waited out.
@@ -108,8 +119,11 @@ error.
 A document or a photo (its largest size) is fetched with `getFile` and staged
 under the host's attachment tree (`$TMPDIR/herrscher-attachments/telegram`),
 then handed over as a `file://` path. A file over 10 MiB is skipped before it is
-downloaded. The manifest declares no attachment host, so the host never fetches
+downloaded, and a file name is cut to 120 bytes. The manifest declares no attachment host, so the host never fetches
 a Telegram URL itself.
+
+Not handled yet: an album arrives as one message per photo, and each one becomes
+its own turn. Grouping them by `media_group_id` is the recorded follow-up.
 
 ## Texts
 

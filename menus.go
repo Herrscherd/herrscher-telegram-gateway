@@ -49,11 +49,11 @@ func (t *menuTable) put(conv string, values, labels []string) string {
 	return token
 }
 
-func (t *menuTable) take(token string, index int) (choice, bool) {
+func (t *menuTable) take(token, conv string, index int) (choice, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	found, ok := t.menus[token]
-	if !ok || index < 0 || index >= len(found.values) {
+	if !ok || found.conv != conv || index < 0 || index >= len(found.values) {
 		return choice{}, false
 	}
 	delete(t.menus, token)

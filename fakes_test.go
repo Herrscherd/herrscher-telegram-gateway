@@ -26,6 +26,43 @@ const (
 	waitLimit    = 3 * time.Second
 )
 
+type signal struct {
+	mu      sync.Mutex
+	changed chan struct{}
+}
+
+func newSignal() *signal { return &signal{changed: make(chan struct{})} }
+
+func (s *signal) bump() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	close(s.changed)
+	s.changed = make(chan struct{})
+}
+
+func (s *signal) next() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.changed
+}
+
+func waitUntil(t *testing.T, what string, change *signal, done func() bool) {
+	t.Helper()
+	deadline := time.NewTimer(waitLimit)
+	defer deadline.Stop()
+	for {
+		next := change.next()
+		if done() {
+			return
+		}
+		select {
+		case <-next:
+		case <-deadline.C:
+			t.Fatalf("waited for %s", what)
+		}
+	}
+}
+
 type apiCall struct {
 	method string
 	body   []byte
@@ -49,11 +86,16 @@ type fakeTelegram struct {
 	nextID  int64
 	files   map[string]string
 	fail    map[string]int
+	texts   map[int64]string
+	change  *signal
 }
 
 func newFakeTelegram(t *testing.T) *fakeTelegram {
 	t.Helper()
-	fake := &fakeTelegram{t: t, nextID: 1000, files: make(map[string]string), fail: make(map[string]int)}
+	fake := &fakeTelegram{
+		t: t, nextID: 1000, files: make(map[string]string), fail: make(map[string]int),
+		texts: make(map[int64]string), change: newSignal(),
+	}
 	fake.server = httptest.NewServer(http.HandlerFunc(fake.serve))
 	t.Cleanup(fake.server.Close)
 	return fake
@@ -82,6 +124,15 @@ func (f *fakeTelegram) serve(writer http.ResponseWriter, request *http.Request) 
 		f.t.Errorf("read the request: %v", err)
 	}
 	if method == "getUpdates" {
+		f.mu.Lock()
+		code := f.fail[method]
+		f.mu.Unlock()
+		if code != 0 {
+			defer f.change.bump()
+			writer.WriteHeader(code)
+			f.write(writer, `{"ok":false,"error_code":`+strconv.Itoa(code)+`,"description":"Conflict: terminated by other getUpdates request"}`)
+			return
+		}
 		f.answer(writer, f.drain(request.Context()))
 		return
 	}
@@ -89,6 +140,12 @@ func (f *fakeTelegram) serve(writer http.ResponseWriter, request *http.Request) 
 	f.calls = append(f.calls, apiCall{method: method, body: body})
 	code := f.fail[method]
 	f.mu.Unlock()
+	defer f.change.bump()
+	if method == "editMessageText" && f.unmodified(body) {
+		writer.WriteHeader(http.StatusBadRequest)
+		f.write(writer, `{"ok":false,"error_code":400,"description":"Bad Request: message is not modified"}`)
+		return
+	}
 	if code != 0 {
 		writer.WriteHeader(code)
 		f.write(writer, `{"ok":false,"error_code":`+strconv.Itoa(code)+`,"description":"refused","parameters":{"retry_after":1}}`)
@@ -97,12 +154,31 @@ func (f *fakeTelegram) serve(writer http.ResponseWriter, request *http.Request) 
 	f.answer(writer, f.result(method, body))
 }
 
+func (f *fakeTelegram) unmodified(body []byte) bool {
+	var edit textEdit
+	if err := json.Unmarshal(body, &edit); err != nil {
+		f.t.Errorf("decode the edit: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.texts[edit.MessageID] == edit.Text && len(edit.Entities) == 0 {
+		return true
+	}
+	f.texts[edit.MessageID] = edit.Text
+	return false
+}
+
 func (f *fakeTelegram) drain(ctx context.Context) []update {
-	deadline := time.NewTimer(20 * time.Millisecond)
-	defer deadline.Stop()
-	select {
-	case <-ctx.Done():
-	case <-deadline.C:
+	pushed := f.change.next()
+	f.mu.Lock()
+	waiting := len(f.updates) > 0
+	f.mu.Unlock()
+	if !waiting {
+		select {
+		case <-ctx.Done():
+		case <-pushed:
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -118,6 +194,7 @@ func (f *fakeTelegram) result(method string, body []byte) any {
 	var target struct {
 		ChatID int64  `json:"chat_id"`
 		FileID string `json:"file_id"`
+		Text   string `json:"text"`
 	}
 	if err := json.Unmarshal(body, &target); err != nil {
 		f.t.Errorf("decode %s: %v", method, err)
@@ -129,6 +206,7 @@ func (f *fakeTelegram) result(method string, body []byte) any {
 		f.mu.Lock()
 		f.nextID++
 		sent := f.nextID
+		f.texts[sent] = target.Text
 		f.mu.Unlock()
 		return message{MessageID: sent, Chat: chat{ID: target.ChatID}}
 	case "getFile":
@@ -154,8 +232,9 @@ func (f *fakeTelegram) answer(writer http.ResponseWriter, result any) {
 
 func (f *fakeTelegram) push(next ...update) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.updates = append(f.updates, next...)
+	f.mu.Unlock()
+	f.change.bump()
 }
 
 func (f *fakeTelegram) callsTo(method string) []apiCall {
@@ -172,15 +251,8 @@ func (f *fakeTelegram) callsTo(method string) []apiCall {
 
 func (f *fakeTelegram) waitCalls(t *testing.T, method string, count int) []apiCall {
 	t.Helper()
-	deadline := time.Now().Add(waitLimit)
-	for time.Now().Before(deadline) {
-		if found := f.callsTo(method); len(found) >= count {
-			return found
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("waited for %d %s calls, got %d", count, method, len(f.callsTo(method)))
-	return nil
+	waitUntil(t, method, f.change, func() bool { return len(f.callsTo(method)) >= count })
+	return f.callsTo(method)
 }
 
 type fakeControl struct {
@@ -191,10 +263,12 @@ type fakeControl struct {
 	submitted   map[string][]contracts.Inbound
 	picks       []string
 	interrupted []string
+	repoCalls   int
+	change      *signal
 }
 
 func newFakeControl() *fakeControl {
-	return &fakeControl{submitted: make(map[string][]contracts.Inbound)}
+	return &fakeControl{submitted: make(map[string][]contracts.Inbound), change: newSignal()}
 }
 
 func (c *fakeControl) live(name, conv string) {
@@ -208,6 +282,7 @@ func (c *fakeControl) Dispatch(context.Context, []string) (contracts.Result, err
 }
 
 func (c *fakeControl) Create(_ context.Context, spec contracts.CreateSession) (contracts.Result, error) {
+	defer c.change.bump()
 	c.mu.Lock()
 	c.created = append(c.created, spec)
 	c.mu.Unlock()
@@ -230,6 +305,7 @@ func (c *fakeControl) Scrollback(string) []contracts.ScrollbackLine { return nil
 func (c *fakeControl) Resume(string) error { return nil }
 
 func (c *fakeControl) Interrupt(name string) bool {
+	defer c.change.bump()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.interrupted = append(c.interrupted, name)
@@ -237,6 +313,7 @@ func (c *fakeControl) Interrupt(name string) bool {
 }
 
 func (c *fakeControl) Submit(name string, in contracts.Inbound) bool {
+	defer c.change.bump()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for index := range c.sessions {
@@ -249,6 +326,7 @@ func (c *fakeControl) Submit(name string, in contracts.Inbound) bool {
 }
 
 func (c *fakeControl) Pick(name, value string) bool {
+	defer c.change.bump()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.picks = append(c.picks, name+"="+value)
@@ -256,8 +334,10 @@ func (c *fakeControl) Pick(name, value string) bool {
 }
 
 func (c *fakeControl) Repos(context.Context) ([]contracts.RepoRef, error) {
+	defer c.change.bump()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.repoCalls++
 	return c.repos, nil
 }
 
@@ -269,14 +349,7 @@ func (c *fakeControl) snapshot(read func(c *fakeControl) bool) bool {
 
 func (c *fakeControl) waitFor(t *testing.T, what string, read func(c *fakeControl) bool) {
 	t.Helper()
-	deadline := time.Now().Add(waitLimit)
-	for time.Now().Before(deadline) {
-		if c.snapshot(read) {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("waited for %s", what)
+	waitUntil(t, what, c.change, func() bool { return c.snapshot(read) })
 }
 
 func startGateway(t *testing.T, fake *fakeTelegram, ctrl contracts.SessionControl, settings map[string]string) *Gateway {

@@ -12,22 +12,23 @@ import (
 )
 
 const (
-	repoMenuMax   = 20
-	stopCommand   = "/stop"
-	localPrefix   = "local:"
-	remotePrefix  = "remote:"
-	repoNoneKey   = "telegram.repo.none"
-	repoAskKey    = "telegram.repo.ask"
-	repoCappedKey = "telegram.repo.ask_capped"
-	repoDoneKey   = "telegram.repo.started"
-	deniedKey     = "telegram.menu.denied"
-	ownedKey      = "telegram.menu.owned"
-	goneKey       = "telegram.menu.gone"
-	pickedKey     = "telegram.menu.picked"
-	lostKey       = "telegram.undelivered"
-	stopNoneKey   = "telegram.stop.none"
-	stopSentKey   = "telegram.stop.sent"
-	notReadyKey   = "telegram.control.unavailable"
+	repoMenuMax    = 20
+	stopCommand    = "/stop"
+	localPrefix    = "local:"
+	remotePrefix   = "remote:"
+	repoNoneKey    = "telegram.repo.none"
+	repoAskKey     = "telegram.repo.ask"
+	repoCappedKey  = "telegram.repo.ask_capped"
+	repoDoneKey    = "telegram.repo.started"
+	deniedKey      = "telegram.menu.denied"
+	ownedKey       = "telegram.menu.owned"
+	goneKey        = "telegram.menu.gone"
+	pickedKey      = "telegram.menu.picked"
+	lostKey        = "telegram.undelivered"
+	stopNoneKey    = "telegram.stop.none"
+	stopSentKey    = "telegram.stop.sent"
+	notReadyKey    = "telegram.control.unavailable"
+	fileRefusedKey = "telegram.file.refused"
 )
 
 type pendingBind struct {
@@ -58,28 +59,30 @@ func (r *router) onUpdate(ctx context.Context, next update) {
 		r.onMessage(ctx, next.Message)
 	case next.CallbackQuery != nil:
 		r.onCallback(ctx, next.CallbackQuery)
-	case next.StoppedGeneration != nil:
-		r.onStopped(next.StoppedGeneration)
 	}
+}
+
+func (r *router) accepts(next update) bool {
+	switch {
+	case next.Message != nil:
+		return r.set.admits(next.Message)
+	case next.CallbackQuery != nil:
+		return next.CallbackQuery.Message != nil
+	case next.StoppedGeneration != nil:
+		stopped := next.StoppedGeneration
+		return stopped.Chat.Type == chatTypePrivate && r.set.authorizes(stopped.Chat.ID)
+	}
+	return false
 }
 
 func laneKeyOf(next update) string {
-	switch {
-	case next.Message != nil:
-		return conversationOf(next.Message).String()
-	case next.CallbackQuery != nil && next.CallbackQuery.Message != nil:
+	if next.CallbackQuery != nil {
 		return conversationOf(next.CallbackQuery.Message).String()
-	case next.StoppedGeneration != nil:
-		return chatRef{chat: next.StoppedGeneration.Chat.ID, thread: next.StoppedGeneration.ThreadID}.String()
 	}
-	return ""
+	return conversationOf(next.Message).String()
 }
 
 func (r *router) onMessage(ctx context.Context, msg *message) {
-	if !r.set.admits(msg) {
-		r.log.Debug("message refused by the access list", "chat", msg.Chat.ID)
-		return
-	}
 	text, addressed := r.addressed(msg)
 	if !addressed {
 		return
@@ -94,12 +97,19 @@ func (r *router) onMessage(ctx context.Context, msg *message) {
 		r.stop(ctx, ctrl, conv)
 		return
 	}
+	attachments := r.files.stage(ctx, conv, msg)
+	if len(attachments) < len(filesOf(msg)) {
+		r.post(ctx, conv, r.msgs.say(fileRefusedKey, nil))
+	}
+	if text == "" && len(attachments) == 0 {
+		return
+	}
 	inbound := contracts.Inbound{
 		Conversation: contracts.Conversation{Gateway: gatewayKind, ID: conv.String()},
 		Author:       displayName(msg.From),
 		AuthorID:     formatID(msg.From.ID),
 		Text:         text,
-		Attachments:  r.files.stage(ctx, conv, msg),
+		Attachments:  attachments,
 		MessageID:    contracts.MessageID(formatID(msg.MessageID)),
 	}
 	if r.deliver(ctx, ctrl, conv, inbound) {
@@ -219,12 +229,11 @@ func (r *router) stop(ctx context.Context, ctrl contracts.SessionControl, conv c
 	r.post(ctx, conv, r.msgs.say(stopSentKey, nil))
 }
 
-func (r *router) onStopped(stopped *generationStopped) {
+func (r *router) interrupt(conv chatRef) {
 	ctrl := r.ctrl()
 	if ctrl == nil {
 		return
 	}
-	conv := chatRef{chat: stopped.Chat.ID, thread: stopped.ThreadID}
 	if session, _ := sessionOf(ctrl, conv); session != "" {
 		ctrl.Interrupt(session)
 	}
@@ -291,41 +300,44 @@ func (r *router) bind(ctx context.Context, ctrl contracts.SessionControl, conv c
 }
 
 func (r *router) onCallback(ctx context.Context, query *callbackQuery) {
-	answer := r.pick(ctx, query)
+	answer, then := r.pick(ctx, query)
 	if err := r.api.answerCallbackQuery(ctx, callbackAnswer{CallbackQueryID: query.ID, Text: answer}); err != nil {
 		r.log.Warn("answer button press failed", "err", err)
 	}
+	if then != nil {
+		then(ctx)
+	}
 }
 
-func (r *router) pick(ctx context.Context, query *callbackQuery) string {
+func (r *router) pick(ctx context.Context, query *callbackQuery) (string, job) {
 	if !r.set.authorizes(query.From.ID) {
-		return r.msgs.say(deniedKey, nil)
+		return r.msgs.say(deniedKey, nil), nil
 	}
 	parsed, ok := parseCallback(query.Data)
 	if !ok || query.Message == nil {
-		return r.msgs.say(goneKey, nil)
+		return r.msgs.say(goneKey, nil), nil
 	}
 	ctrl := r.ctrl()
 	if ctrl == nil {
-		return r.msgs.say(notReadyKey, nil)
+		return r.msgs.say(notReadyKey, nil), nil
 	}
 	conv := conversationOf(query.Message)
 	if parsed.kind == bindPrefix && !r.ownsBind(conv, parsed.token, query.From.ID) {
-		return r.msgs.say(ownedKey, nil)
+		return r.msgs.say(ownedKey, nil), nil
 	}
-	picked, found := r.menus.take(parsed.token, parsed.index)
+	picked, found := r.menus.take(parsed.token, conv.String(), parsed.index)
 	if !found {
-		return r.msgs.say(goneKey, nil)
+		return r.msgs.say(goneKey, nil), nil
 	}
 	r.closeMenu(ctx, query.Message)
 	if parsed.kind == bindPrefix {
-		return r.pickRepo(ctx, ctrl, conv, parsed.token, picked)
+		return r.pickRepo(ctrl, conv, parsed.token, picked)
 	}
 	session, _ := sessionOf(ctrl, conv)
 	if session == "" || !ctrl.Pick(session, picked.value) {
-		return r.msgs.say(goneKey, nil)
+		return r.msgs.say(goneKey, nil), nil
 	}
-	return r.msgs.say(pickedKey, map[string]any{"Choice": picked.label})
+	return r.msgs.say(pickedKey, map[string]any{"Choice": picked.label}), nil
 }
 
 func (r *router) ownsBind(conv chatRef, token string, from int64) bool {
@@ -335,7 +347,7 @@ func (r *router) ownsBind(conv chatRef, token string, from int64) bool {
 	return !found || waiting.token != token || waiting.author == from
 }
 
-func (r *router) pickRepo(ctx context.Context, ctrl contracts.SessionControl, conv chatRef, token string, picked choice) string {
+func (r *router) pickRepo(ctrl contracts.SessionControl, conv chatRef, token string, picked choice) (string, job) {
 	r.mu.Lock()
 	waiting, found := r.pending[conv.String()]
 	if found && waiting.token == token {
@@ -343,10 +355,10 @@ func (r *router) pickRepo(ctx context.Context, ctrl contracts.SessionControl, co
 	}
 	r.mu.Unlock()
 	if !found || waiting.token != token {
-		return r.msgs.say(goneKey, nil)
+		return r.msgs.say(goneKey, nil), nil
 	}
-	r.bind(ctx, ctrl, conv, picked.value, waiting.inbound)
-	return r.msgs.say(repoDoneKey, map[string]any{"Repo": picked.label})
+	bind := func(ctx context.Context) { r.bind(ctx, ctrl, conv, picked.value, waiting.inbound) }
+	return r.msgs.say(repoDoneKey, map[string]any{"Repo": picked.label}), bind
 }
 
 func (r *router) closeMenu(ctx context.Context, msg *message) {
