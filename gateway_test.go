@@ -567,21 +567,36 @@ func TestEachAlbumItemRestartsTheWindow(t *testing.T) {
 	ctrl := newFakeControl()
 	ctrl.live("tg-42", "42")
 	gateway := startGateway(t, fake, ctrl, nil)
-	gateway.album = 250 * time.Millisecond
+	gateway.album = 600 * time.Millisecond
 
 	fake.push(albumPhoto(1, 10, "p1", "slow upload"))
-	gap := time.NewTimer(150 * time.Millisecond)
+	gap := time.NewTimer(400 * time.Millisecond)
 	<-gap.C
 	fake.push(albumPhoto(2, 11, "p2", ""))
-	gap.Reset(150 * time.Millisecond)
+	gap.Reset(400 * time.Millisecond)
 	<-gap.C
 	fake.push(albumPhoto(3, 12, "p3", ""))
 
 	ctrl.waitFor(t, "the album", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) > 0 })
 	settle(t, gateway, "42")
-	gap.Reset(300 * time.Millisecond)
+	gap.Reset(700 * time.Millisecond)
 	<-gap.C
 	if got := ctrl.submitted["tg-42"]; len(got) != 1 || len(got[0].Attachments) != 3 {
 		t.Fatalf("submitted %d turns, the first with %d files", len(got), len(got[0].Attachments))
+	}
+}
+
+func TestStopIsNotHeldBehindAnAlbum(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.live("tg-42", "42")
+	gateway := startGateway(t, fake, ctrl, nil)
+	gateway.album = time.Minute
+
+	fake.push(albumPhoto(1, 10, "p1", "look"), privateText(2, 11, testOwner, "/stop"))
+
+	ctrl.waitFor(t, "the interrupt", func(c *fakeControl) bool { return len(c.interrupted) == 1 })
+	if len(ctrl.submitted["tg-42"]) != 0 {
+		t.Fatal("the album was handed over before its window ended")
 	}
 }

@@ -56,6 +56,7 @@ type router struct {
 	mu      sync.Mutex
 	pending map[string]pendingBind
 	albums  map[string]*heldAlbum
+	holds   int
 }
 
 func (r *router) onUpdate(ctx context.Context, next update) {
@@ -103,24 +104,37 @@ func (r *router) onMessage(ctx context.Context, msg *message) {
 		if len(held.members) < albumMaxItems {
 			held.members = append(held.members, msg)
 		}
-		held.gen++
+		r.holds++
+		held.gen = r.holds
+		gen := held.gen
 		r.mu.Unlock()
-		r.scheduleFlush(ctx, msg, held.gen)
+		r.scheduleFlush(ctx, msg, gen)
 		return
-	case holding:
-		if len(held.after) < laneDepth {
+	case holding && !isStop(msg):
+		kept := len(held.after) < laneDepth
+		if kept {
 			held.after = append(held.after, msg)
 		}
 		r.mu.Unlock()
+		if !kept {
+			r.log.Warn("message dropped, too many wait behind an album", "chat", msg.Chat.ID)
+		}
 		return
-	case msg.MediaGroupID != "":
-		r.albums[conv] = &heldAlbum{group: msg.MediaGroupID, members: []*message{msg}}
+	case !holding && msg.MediaGroupID != "":
+		r.holds++
+		gen := r.holds
+		r.albums[conv] = &heldAlbum{group: msg.MediaGroupID, members: []*message{msg}, gen: gen}
 		r.mu.Unlock()
-		r.scheduleFlush(ctx, msg, 0)
+		r.scheduleFlush(ctx, msg, gen)
 		return
 	}
 	r.mu.Unlock()
 	r.handle(ctx, msg, []*message{msg})
+}
+
+func isStop(msg *message) bool {
+	command, _, _ := strings.Cut(strings.TrimSpace(msg.Text), "@")
+	return strings.EqualFold(command, stopCommand)
 }
 
 func (r *router) scheduleFlush(ctx context.Context, msg *message, gen int) {
