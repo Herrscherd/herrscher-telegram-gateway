@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf16"
 
 	contracts "github.com/Herrscherd/herrscher-contracts"
@@ -29,6 +30,8 @@ const (
 	stopSentKey    = "telegram.stop.sent"
 	notReadyKey    = "telegram.control.unavailable"
 	fileRefusedKey = "telegram.file.refused"
+	albumWindow    = time.Second
+	albumMaxItems  = 10
 )
 
 type pendingBind struct {
@@ -48,9 +51,12 @@ type router struct {
 	files    stager
 	ctrl     func() contracts.SessionControl
 	noteUser func(ctx context.Context, conv chatRef, noted notedPrompt)
+	later    func(ctx context.Context, conv chatRef, next job) bool
 
 	mu      sync.Mutex
 	pending map[string]pendingBind
+	albums  map[string]*heldAlbum
+	holds   int
 }
 
 func (r *router) onUpdate(ctx context.Context, next update) {
@@ -82,7 +88,94 @@ func laneKeyOf(next update) string {
 	return conversationOf(next.Message).String()
 }
 
+type heldAlbum struct {
+	group   string
+	members []*message
+	after   []*message
+	gen     int
+}
+
 func (r *router) onMessage(ctx context.Context, msg *message) {
+	conv := conversationOf(msg).String()
+	r.mu.Lock()
+	held, holding := r.albums[conv]
+	switch {
+	case holding && msg.MediaGroupID == held.group:
+		if len(held.members) < albumMaxItems {
+			held.members = append(held.members, msg)
+		}
+		r.holds++
+		held.gen = r.holds
+		gen := held.gen
+		r.mu.Unlock()
+		r.scheduleFlush(ctx, msg, gen)
+		return
+	case holding && !r.isStop(msg):
+		kept := len(held.after) < laneDepth
+		if kept {
+			held.after = append(held.after, msg)
+		}
+		r.mu.Unlock()
+		if !kept {
+			r.log.Warn("message dropped, too many wait behind an album", "chat", msg.Chat.ID)
+		}
+		return
+	case !holding && msg.MediaGroupID != "":
+		r.holds++
+		gen := r.holds
+		r.albums[conv] = &heldAlbum{group: msg.MediaGroupID, members: []*message{msg}, gen: gen}
+		r.mu.Unlock()
+		r.scheduleFlush(ctx, msg, gen)
+		return
+	}
+	r.mu.Unlock()
+	r.handle(ctx, msg, []*message{msg})
+}
+
+func (r *router) isStop(msg *message) bool {
+	return strings.EqualFold(stripCommandMention(strings.TrimSpace(msg.Text), r.self.Username), stopCommand)
+}
+
+func (r *router) scheduleFlush(ctx context.Context, msg *message, gen int) {
+	conv := conversationOf(msg)
+	if !r.later(ctx, conv, func(ctx context.Context) { r.flushAlbum(ctx, conv.String(), gen) }) {
+		r.flushAlbum(ctx, conv.String(), gen)
+	}
+}
+
+func (r *router) flushAlbum(ctx context.Context, conv string, gen int) {
+	r.mu.Lock()
+	held, holding := r.albums[conv]
+	if !holding || held.gen != gen {
+		r.mu.Unlock()
+		return
+	}
+	delete(r.albums, conv)
+	r.mu.Unlock()
+	lead := held.members[0]
+	for _, member := range held.members {
+		if member.Caption != "" || member.Text != "" {
+			lead = member
+			break
+		}
+	}
+	r.handle(ctx, lead, held.members)
+	for _, next := range held.after {
+		r.onMessage(ctx, next)
+	}
+}
+
+func (r *router) heldMessages() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, held := range r.albums {
+		count += len(held.members) + len(held.after)
+	}
+	return count
+}
+
+func (r *router) handle(ctx context.Context, msg *message, members []*message) {
 	text, addressed := r.addressed(msg)
 	if !addressed {
 		return
@@ -97,8 +190,13 @@ func (r *router) onMessage(ctx context.Context, msg *message) {
 		r.stop(ctx, ctrl, conv)
 		return
 	}
-	attachments := r.files.stage(ctx, conv, msg)
-	if len(attachments) < len(filesOf(msg)) {
+	var attachments []contracts.Attachment
+	offered := 0
+	for _, member := range members {
+		attachments = append(attachments, r.files.stage(ctx, conv, member)...)
+		offered += len(filesOf(member))
+	}
+	if len(attachments) < offered {
 		r.post(ctx, conv, r.msgs.say(fileRefusedKey, nil))
 	}
 	if text == "" && len(attachments) == 0 {

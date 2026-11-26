@@ -70,9 +70,7 @@ func (s *sink) apply(ctx context.Context, event contracts.Event) {
 			s.turn.text = ""
 		}
 	case eventAbandoned:
-		if s.turn == nil && len(s.prompts) > 0 {
-			s.prompts = s.prompts[1:]
-		}
+		s.dropAbandoned(event)
 		s.abandon(ctx)
 	case eventReply:
 		if event.Done {
@@ -91,6 +89,17 @@ func (s *sink) noteUser(ctx context.Context, noted notedPrompt) {
 		s.prompts = s.prompts[1:]
 	}
 	s.prompts = append(s.prompts, noted)
+}
+
+func (s *sink) dropAbandoned(event contracts.Event) {
+	if s.turn != nil || len(s.prompts) == 0 {
+		return
+	}
+	if event.Who != "" || event.Text != "" {
+		s.claim(event.Who, event.Text)
+		return
+	}
+	s.prompts = s.prompts[1:]
 }
 
 func (s *sink) claim(author, text string) int64 {

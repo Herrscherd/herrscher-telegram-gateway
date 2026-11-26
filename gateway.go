@@ -52,6 +52,7 @@ type Gateway struct {
 	life   lifetime
 	cancel context.CancelFunc
 	now    func() time.Time
+	album  time.Duration
 
 	mu      sync.Mutex
 	ctrl    contracts.SessionControl
@@ -67,7 +68,7 @@ func newGateway(ctx context.Context, api bot, set settings, self botIdentity, ms
 	life := func() context.Context { return run }
 	gateway := &Gateway{
 		api: api, msgs: msgs, log: log, menus: newMenuTable(),
-		lanes: newLanes(), life: life, cancel: cancel, now: time.Now,
+		lanes: newLanes(), life: life, cancel: cancel, now: time.Now, album: albumWindow,
 		sinks: make(map[string]*sink),
 	}
 	gateway.router = &router{
@@ -75,7 +76,9 @@ func newGateway(ctx context.Context, api bot, set settings, self botIdentity, ms
 		files:    stager{api: api, root: stagingRoot(), log: log},
 		ctrl:     gateway.control,
 		noteUser: gateway.noteUser,
+		later:    gateway.later,
 		pending:  make(map[string]pendingBind),
+		albums:   make(map[string]*heldAlbum),
 	}
 	return gateway
 }
@@ -126,6 +129,9 @@ func (g *Gateway) Close(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
+		if lost := g.router.heldMessages(); lost > 0 {
+			g.log.Warn("messages held for an album were dropped on close", "count", lost)
+		}
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("telegram gateway close: %w", ctx.Err())
@@ -218,6 +224,10 @@ func (g *Gateway) onStopped(ctx context.Context, stopped *generationStopped) {
 			g.router.interrupt(conv)
 		}
 	})
+}
+
+func (g *Gateway) later(ctx context.Context, conv chatRef, next job) bool {
+	return g.lanes.later(ctx, inboundLane+conv.String(), g.album, next)
 }
 
 func (g *Gateway) noteUser(ctx context.Context, conv chatRef, noted notedPrompt) {
