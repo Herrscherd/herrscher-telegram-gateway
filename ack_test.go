@@ -203,3 +203,38 @@ func TestTheTurnAfterAnEarlyDoneGetsItsAck(t *testing.T) {
 		t.Fatalf("the turn for prompt 10 runs with reaction %+v, want %s", got, ackEmoji)
 	}
 }
+
+func TestTwoHumanEventsWithoutADoneClearTheAckOfTheFirstTurn(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.live("tg-42", "42")
+	gateway := startGateway(t, fake, ctrl, nil)
+	conv := contracts.Conversation{Gateway: gatewayKind, ID: "42"}
+
+	fake.push(privateText(1, 10, testOwner, "first"))
+	fake.push(privateText(2, 11, testOwner, "second"))
+	fake.waitCalls(t, "setMessageReaction", 2)
+	settle(t, gateway, conv.ID)
+	gateway.EmitTo(conv, humanAsking("first"))
+	gateway.EmitTo(conv, humanAsking("second"))
+	gateway.EmitTo(conv, contracts.Event{T: eventReply, Done: true, Text: "done"})
+	settle(t, gateway, conv.ID)
+
+	for _, messageID := range []int64{10, 11} {
+		if got := lastReactionOn(t, fake, messageID); len(got.Reaction) != 0 {
+			t.Fatalf("message %d keeps %+v after its turns ended, want the ack cleared", messageID, got)
+		}
+	}
+}
+
+func lastReactionOn(t *testing.T, fake *fakeTelegram, messageID int64) reactionCall {
+	t.Helper()
+	calls := fake.callsTo("setMessageReaction")
+	for index := len(calls) - 1; index >= 0; index-- {
+		if got := decodeCall[reactionCall](t, calls[index]); got.MessageID == messageID {
+			return got
+		}
+	}
+	t.Fatalf("no reaction was set on message %d", messageID)
+	return reactionCall{}
+}

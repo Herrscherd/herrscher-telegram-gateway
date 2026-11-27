@@ -193,6 +193,7 @@ func (s *sink) keyOf(messageID int64) ackKey {
 }
 
 func (s *sink) begin(ctx context.Context, author, text string) {
+	s.endTurn(ctx, "")
 	claimed, found := s.claim(ctx, author, text)
 	s.turn = &turnView{draftID: s.drafts.Add(1), asked: notedPrompt{author: author, text: text}}
 	if !found {
