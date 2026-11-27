@@ -241,10 +241,19 @@ func (r *router) routeOwnVoice(from origin, msg *tgctl.Message, base chatRef, vo
 	if text, addressed := addressedTo(from.self, msg); addressed {
 		return conv, text, true
 	}
-	if voice.Reply == contracts.ReplyInChannels && channelHas(voice.Channels, base) {
+	if voice.Reply == contracts.ReplyInChannels && channelHas(voice.Channels, base) && !r.namesOtherAddressee(msg, voices) {
 		return conv, plainText(msg), true
 	}
 	return address{}, "", false
+}
+
+func (r *router) namesOtherAddressee(msg *tgctl.Message, voices []contracts.AgentVoice) bool {
+	raw, entities := textOf(msg)
+	if mentionedBy(raw, entities, r.voices.self) || r.voices.mentionsAgentBot(raw, entities) {
+		return true
+	}
+	_, named := tokenlessMention(voices, r.voices, raw)
+	return named
 }
 
 func (r *router) routeHouse(from origin, msg *tgctl.Message, base chatRef, voices []contracts.AgentVoice) (address, string, bool) {
