@@ -102,11 +102,16 @@ func (r *router) routeOwnVoice(from origin, msg *tgctl.Message, base chatRef, vo
 
 func (r *router) namesOtherAddressee(from origin, msg *tgctl.Message, voices []contracts.AgentVoice) bool {
 	raw, entities := textOf(msg)
-	if mentionedBy(raw, entities, r.voices.self) || r.voices.mentionsOtherAgentBot(raw, entities, from.self) {
-		return true
+	return mentionedBy(raw, entities, r.voices.self) || r.voices.mentionsOtherAgentBot(raw, entities, from.self) || namedTokenless(voices, r.voices, raw)
+}
+
+func namedTokenless(voices []contracts.AgentVoice, bots *voiceBots, text string) bool {
+	for _, voice := range voices {
+		if validAgent(voice.Agent) && !bots.hasOwn(voice.Agent) && namesMentioned(text, voice.Agent) {
+			return true
+		}
 	}
-	_, named := tokenlessMention(voices, r.voices, raw)
-	return named
+	return false
 }
 
 func (r *router) routeHouse(from origin, msg *tgctl.Message, base chatRef, voices []contracts.AgentVoice) []addressee {

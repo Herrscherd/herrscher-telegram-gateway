@@ -111,3 +111,26 @@ func TestAReplyToATokenlessVoicesHeaderGoesToTheHouseAsOnDiscord(t *testing.T) {
 		t.Fatalf("route = %+v, want the house to answer a reply to bob's header", targets)
 	}
 }
+
+func TestAChannelsAgentLeavesAMessageNamingANeverOrSigningInAgent(t *testing.T) {
+	cases := map[string]struct {
+		reply     contracts.ReplyRule
+		signingIn bool
+	}{
+		"never agent":      {reply: contracts.ReplyNever},
+		"signing-in agent": {reply: contracts.ReplyOnMention, signingIn: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			router, voices, from := voiceRouterFixture(t)
+			voices[2] = voiceOf(t, "bob", "", tc.reply)
+			if tc.signingIn {
+				router.voices.expect("bob")
+			}
+			msg := groupText("@bob hi")
+			if captured := router.route(from, &msg, voices); len(captured) != 0 {
+				t.Fatalf("ana captured %q, which names bob: %+v", msg.Text, captured)
+			}
+		})
+	}
+}
