@@ -127,6 +127,10 @@ reads that list for each message.
   `/command@username`, a reply to one of its messages, or a private chat
   with it. An agent without its own bot also answers to `@agent` written in
   the text. `channels` adds every message of the chats listed for the agent.
+  A token-less `channels` agent that captures a chat answers an explicit
+  mention of the house bot there too: the agent answers first, then the house,
+  as on Discord. A reply to the house is not a mention, so the agent alone
+  answers it.
 - A message that mentions an agent bot and not the house bot is not answered
   by the house. A message authored by any of our bots is dropped everywhere.
 - Privacy mode decides what a bot sees in a group. With it on, a bot sees only
