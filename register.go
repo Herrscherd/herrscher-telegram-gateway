@@ -50,6 +50,10 @@ func newGatewaySet(ctx context.Context, cfg contracts.PluginConfig, base string,
 	if err != nil {
 		return contracts.GatewaySet{}, fmt.Errorf("telegram gateway: resolve the bot identity: %w", err)
 	}
-	gateway := newGateway(ctx, api, set, self, msgs, log)
+	gateway := newGateway(ctx, api, set, self, msgs, log, dialer(base))
 	return contracts.GatewaySet{Gateway: gateway, Prober: gateway}, nil
+}
+
+func dialer(base string) func(token string) bot {
+	return func(token string) bot { return tgctl.New(token, tgctl.WithBaseURL(base)) }
 }

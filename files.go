@@ -29,7 +29,6 @@ const (
 var errUnreadableType = errors.New("file is not a type the agent can read")
 
 type stager struct {
-	api  bot
 	root string
 	log  *slog.Logger
 }
@@ -74,10 +73,10 @@ func largestPhoto(sizes []tgctl.PhotoSize) (tgctl.PhotoSize, bool) {
 	return best, true
 }
 
-func (s stager) stage(ctx context.Context, conv chatRef, msg *tgctl.Message) []contracts.Attachment {
+func (s stager) stage(ctx context.Context, api bot, conv address, msg *tgctl.Message) []contracts.Attachment {
 	var staged []contracts.Attachment
 	for index, file := range filesOf(msg) {
-		attachment, err := s.stageOne(ctx, conv, msg.MessageID, index, file)
+		attachment, err := s.stageOne(ctx, api, conv, msg.MessageID, index, file)
 		if err != nil {
 			s.log.Warn("attachment skipped", "file", file.name, "err", err)
 			continue
@@ -87,14 +86,14 @@ func (s stager) stage(ctx context.Context, conv chatRef, msg *tgctl.Message) []c
 	return staged
 }
 
-func (s stager) stageOne(ctx context.Context, conv chatRef, messageID int64, index int, file incomingFile) (contracts.Attachment, error) {
+func (s stager) stageOne(ctx context.Context, api bot, conv address, messageID int64, index int, file incomingFile) (contracts.Attachment, error) {
 	if !file.readable() {
 		return contracts.Attachment{}, errUnreadableType
 	}
 	if file.size > attachmentMaxBytes {
 		return contracts.Attachment{}, tgctl.ErrFileTooLarge
 	}
-	remote, err := s.api.GetFile(ctx, file.fileID)
+	remote, err := api.GetFile(ctx, file.fileID)
 	if err != nil {
 		return contracts.Attachment{}, err
 	}
@@ -107,7 +106,7 @@ func (s stager) stageOne(ctx context.Context, conv chatRef, messageID int64, ind
 	}
 	name := strconv.FormatInt(messageID, 10) + "-" + strconv.Itoa(index) + "-" + safeFileName(file.name, remote.FilePath)
 	target := filepath.Join(dir, name)
-	size, err := s.write(ctx, target, remote.FilePath)
+	size, err := s.write(ctx, api, target, remote.FilePath)
 	if err != nil {
 		return contracts.Attachment{}, err
 	}
@@ -115,12 +114,12 @@ func (s stager) stageOne(ctx context.Context, conv chatRef, messageID int64, ind
 	return contracts.Attachment{Filename: name, URL: location.String(), ContentType: file.contentType, Size: int(size)}, nil
 }
 
-func (s stager) write(ctx context.Context, target, remotePath string) (int64, error) {
+func (s stager) write(ctx context.Context, api bot, target, remotePath string) (int64, error) {
 	out, err := os.OpenFile(filepath.Clean(target), os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_EXCL, stagedFilePerm)
 	if err != nil {
 		return 0, fmt.Errorf("create the staged file: %w", err)
 	}
-	downloadErr := s.api.Download(ctx, remotePath, attachmentMaxBytes, out)
+	downloadErr := api.Download(ctx, remotePath, attachmentMaxBytes, out)
 	err = errors.Join(downloadErr, out.Close())
 	if err != nil {
 		return 0, errors.Join(err, os.Remove(target))

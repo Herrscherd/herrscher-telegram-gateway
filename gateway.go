@@ -41,9 +41,13 @@ var (
 )
 
 // Gateway adapts the Telegram Bot API to the gateway ports. It starts receiving
-// updates when the host binds its session control, and stops on Close.
+// updates when the host binds its session control, one long poll for the house
+// bot and one for each agent that has its own token, and stops on Close.
 type Gateway struct {
 	api    bot
+	self   tgctl.User
+	voices *voiceBots
+	dial   func(token string) bot
 	msgs   messages
 	log    *slog.Logger
 	menus  *menuTable
@@ -63,17 +67,18 @@ type Gateway struct {
 	poller  sync.WaitGroup
 }
 
-func newGateway(ctx context.Context, api bot, set settings, self tgctl.User, msgs messages, log *slog.Logger) *Gateway {
+func newGateway(ctx context.Context, api bot, set settings, self tgctl.User, msgs messages, log *slog.Logger, dial func(token string) bot) *Gateway {
 	run, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	life := func() context.Context { return run }
+	voices := newVoiceBots(api, self)
 	gateway := &Gateway{
-		api: api, msgs: msgs, log: log, menus: newMenuTable(),
-		lanes: newLanes(), life: life, cancel: cancel, now: time.Now, album: albumWindow,
+		api: api, self: self, voices: voices, dial: dial, msgs: msgs, log: log,
+		menus: newMenuTable(), lanes: newLanes(), life: life, cancel: cancel, now: time.Now, album: albumWindow,
 		sinks: make(map[string]*sink),
 	}
 	gateway.router = &router{
-		api: api, set: set, self: self, msgs: msgs, log: log, menus: gateway.menus,
-		files:    stager{api: api, root: stagingRoot(), log: log},
+		set: set, msgs: msgs, log: log, menus: gateway.menus, voices: voices,
+		files:    stager{root: stagingRoot(), log: log},
 		ctrl:     gateway.control,
 		noteUser: gateway.noteUser,
 		later:    gateway.later,
@@ -95,7 +100,8 @@ func (g *Gateway) Manifest() contracts.Manifest {
 }
 
 // BindSessionControl receives the daemon's session controller and starts the
-// long polling loop. Only the first binding starts it, and none after Close.
+// long polling loops: the house bot's, then one for each agent voice that has
+// its own token. Only the first binding starts them, and none after Close.
 func (g *Gateway) BindSessionControl(ctrl contracts.SessionControl) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -104,7 +110,33 @@ func (g *Gateway) BindSessionControl(ctrl contracts.SessionControl) {
 	}
 	g.ctrl = ctrl
 	g.polling = true
-	g.poller.Go(func() { g.poll(g.life()) })
+	g.poller.Go(func() { g.poll(g.life(), g.houseOrigin()) })
+	for _, voice := range directoryVoices(ctrl) {
+		if !voice.Token.Valid() || !validAgent(voice.Agent) {
+			continue
+		}
+		g.startVoice(voice.Agent, g.dial(voice.Token.Secret()))
+	}
+}
+
+func (g *Gateway) houseOrigin() origin {
+	return origin{api: g.api, self: g.self}
+}
+
+func (g *Gateway) startVoice(agent string, client bot) {
+	g.poller.Go(func() { g.pollVoice(g.life(), agent, client) })
+}
+
+func (g *Gateway) pollVoice(ctx context.Context, agent string, client bot) {
+	identity, err := client.GetMe(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			g.log.Warn("agent bot skipped, its token could not sign in", "agent", agent, "err", err)
+		}
+		return
+	}
+	g.voices.register(agent, client, identity)
+	g.poll(ctx, origin{agent: agent, api: client, self: identity})
 }
 
 func (g *Gateway) control() contracts.SessionControl {
@@ -113,7 +145,7 @@ func (g *Gateway) control() contracts.SessionControl {
 	return g.ctrl
 }
 
-// Close stops the polling loop and the conversation workers and waits for them,
+// Close stops the polling loops and the conversation workers and waits for them,
 // bounded by ctx. Once closed, the gateway never polls again.
 func (g *Gateway) Close(ctx context.Context) error {
 	g.mu.Lock()
@@ -138,11 +170,11 @@ func (g *Gateway) Close(ctx context.Context) error {
 	}
 }
 
-func (g *Gateway) poll(ctx context.Context) {
+func (g *Gateway) poll(ctx context.Context, from origin) {
 	offset := int64(0)
 	backoff := pollBackoffFloor
 	for ctx.Err() == nil {
-		updates, err := g.api.GetUpdates(ctx, offset)
+		updates, err := from.api.GetUpdates(ctx, offset)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -152,20 +184,26 @@ func (g *Gateway) poll(ctx context.Context) {
 				wait = backoff
 				backoff = min(backoff*backoffGrowth, pollBackoffCeiling)
 			}
-			g.notePollFailure(err, wait)
+			g.notePollFailure(from, err, wait)
 			pause(ctx, wait)
 			continue
 		}
-		g.setFault(nil)
+		if from.house() {
+			g.setFault(nil)
+		}
 		backoff = pollBackoffFloor
 		for _, next := range updates {
 			offset = max(offset, next.UpdateID+1)
-			g.dispatch(ctx, next)
+			g.dispatch(ctx, from, next)
 		}
 	}
 }
 
-func (g *Gateway) notePollFailure(err error, wait time.Duration) {
+func (g *Gateway) notePollFailure(from origin, err error, wait time.Duration) {
+	if !from.house() {
+		g.log.Warn("agent updates failed", "agent", from.agent, "err", err, "retry_in", wait)
+		return
+	}
 	if failure, ok := errors.AsType[*tgctl.APIError](err); ok && errors.Is(err, tgctl.ErrConflict) {
 		cause := errOtherPoller
 		if strings.Contains(strings.ToLower(failure.Description), webhookWord) {
@@ -190,47 +228,68 @@ func (g *Gateway) currentFault() error {
 	return g.fault
 }
 
-func (g *Gateway) dispatch(ctx context.Context, next tgctl.Update) {
-	if !g.router.accepts(next) {
+func (g *Gateway) dispatch(ctx context.Context, from origin, next tgctl.Update) {
+	if !g.router.accepts(from, next) {
 		return
 	}
 	if stopped := next.StoppedMessageGeneration; stopped != nil {
-		g.onStopped(ctx, stopped)
+		g.onStopped(ctx, from, stopped)
 		return
 	}
 	key := laneKeyOf(next)
-	if !g.lanes.push(ctx, inboundLane+key, func(ctx context.Context) { g.router.onUpdate(ctx, next) }) {
+	if !g.lanes.push(ctx, inboundLane+key, func(ctx context.Context) { g.router.onUpdate(ctx, from, next) }) {
 		g.log.Warn("update dropped, the gateway is stopping", "update", next.UpdateID)
 	}
 }
 
-func (g *Gateway) sinkFor(conv chatRef) *sink {
+func (g *Gateway) sinkFor(conv address) *sink {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	key := conv.String()
 	found, ok := g.sinks[key]
 	if !ok {
-		found = &sink{conv: conv, api: g.api, msgs: g.msgs, log: g.log, now: g.now}
+		found = &sink{conv: conv, speak: g.voices.speakerAt(conv), msgs: g.msgs, log: g.log, now: g.now}
 		g.sinks[key] = found
 	}
 	return found
 }
 
-func (g *Gateway) onStopped(ctx context.Context, stopped *tgctl.GenerationStopped) {
-	conv := chatRef{chat: stopped.Chat.ID, thread: stopped.ThreadID}
-	target := g.sinkFor(conv)
-	g.lanes.push(ctx, outboundLane+conv.String(), func(context.Context) {
-		if target.stoppedDraft(stopped.DraftID) {
-			g.router.interrupt(conv)
-		}
-	})
+func (g *Gateway) draftedBy(from origin, conv address) bool {
+	if !from.house() {
+		return conv.agent == from.agent
+	}
+	return conv.agent == "" || !g.voices.hasOwn(conv.agent)
 }
 
-func (g *Gateway) later(ctx context.Context, conv chatRef, next job) bool {
+func (g *Gateway) sinksOf(from origin, stopped *tgctl.GenerationStopped) []*sink {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	ref := chatRef{chat: stopped.Chat.ID, thread: stopped.ThreadID}
+	var found []*sink
+	for _, candidate := range g.sinks {
+		if candidate.conv.chatRef == ref && g.draftedBy(from, candidate.conv) {
+			found = append(found, candidate)
+		}
+	}
+	return found
+}
+
+func (g *Gateway) onStopped(ctx context.Context, from origin, stopped *tgctl.GenerationStopped) {
+	for _, target := range g.sinksOf(from, stopped) {
+		conv := target.conv
+		g.lanes.push(ctx, outboundLane+conv.String(), func(context.Context) {
+			if target.stoppedDraft(stopped.DraftID) {
+				g.router.interrupt(conv)
+			}
+		})
+	}
+}
+
+func (g *Gateway) later(ctx context.Context, conv address, next job) bool {
 	return g.lanes.later(ctx, inboundLane+conv.String(), g.album, next)
 }
 
-func (g *Gateway) noteUser(ctx context.Context, conv chatRef, noted notedPrompt) {
+func (g *Gateway) noteUser(ctx context.Context, conv address, noted notedPrompt) {
 	target := g.sinkFor(conv)
 	g.lanes.push(ctx, outboundLane+conv.String(), func(ctx context.Context) { target.noteUser(ctx, noted) })
 }
@@ -239,7 +298,7 @@ func (g *Gateway) noteUser(ctx context.Context, conv chatRef, noted notedPrompt)
 // to. A text delta is dropped when the conversation's queue is full, since the
 // final reply carries the whole answer.
 func (g *Gateway) EmitTo(conv contracts.Conversation, event contracts.Event) {
-	ref, err := parseChatRef(conv.ID)
+	ref, err := parseAddress(conv.ID)
 	if err != nil {
 		return
 	}
@@ -275,17 +334,18 @@ func (g *Gateway) Reply(ctx context.Context, conv contracts.Conversation, replyT
 }
 
 func (g *Gateway) send(ctx context.Context, conv contracts.Conversation, replyTo int64, text formatted) (contracts.MessageID, error) {
-	ref, err := parseChatRef(conv.ID)
+	ref, err := parseAddress(conv.ID)
 	if err != nil {
 		return "", err
 	}
+	speak := g.voices.speakerAt(ref)
 	first := contracts.MessageID("")
-	for index, part := range text.split(messageMaxUnits) {
-		out := tgctl.OutgoingMessage{ChatID: ref.chat, ThreadID: ref.thread, Text: part.text, Entities: part.entities, LinkPreview: noPreview()}
-		if index == 0 && replyTo != 0 {
-			out.ReplyParameters = &tgctl.ReplyParameters{MessageID: replyTo, AllowSendingWithoutReply: true}
+	for index, part := range text.split(speak.budget()) {
+		reply := int64(0)
+		if index == 0 {
+			reply = replyTo
 		}
-		sent, err := g.api.SendMessage(ctx, out)
+		sent, err := speak.api.SendMessage(ctx, speak.message(ref, reply, part))
 		if err != nil {
 			return first, err
 		}
@@ -299,7 +359,7 @@ func (g *Gateway) send(ctx context.Context, conv contracts.Conversation, replyTo
 // React sets emoji on msg in conv. Telegram offers a fixed set of reactions:
 // an emoji outside it is mapped to its nearest one, or refused with an error.
 func (g *Gateway) React(ctx context.Context, conv contracts.Conversation, msg contracts.MessageID, emoji string) error {
-	ref, err := parseChatRef(conv.ID)
+	ref, err := parseAddress(conv.ID)
 	if err != nil {
 		return err
 	}
@@ -311,7 +371,7 @@ func (g *Gateway) React(ctx context.Context, conv contracts.Conversation, msg co
 	if !ok {
 		return fmt.Errorf("%w: %q", errUnsupported, emoji)
 	}
-	return g.api.SetMessageReaction(ctx, ref.chat, target, offered)
+	return g.voices.speakerAt(ref).api.SetMessageReaction(ctx, ref.chat, target, offered)
 }
 
 // Menu sends prompt in reply to replyTo with one button per choice. A press is
@@ -320,7 +380,7 @@ func (g *Gateway) Menu(ctx context.Context, conv contracts.Conversation, replyTo
 	if len(opts) == 0 {
 		return errNoChoices
 	}
-	ref, err := parseChatRef(conv.ID)
+	ref, err := parseAddress(conv.ID)
 	if err != nil {
 		return err
 	}
@@ -328,13 +388,14 @@ func (g *Gateway) Menu(ctx context.Context, conv contracts.Conversation, replyTo
 	for _, choice := range opts {
 		values, labels = append(values, choice.Value), append(labels, choice.Label)
 	}
-	token := g.menus.put(ref.String(), values, labels)
-	part := plain(prompt).tail(messageMaxUnits)
-	out := tgctl.OutgoingMessage{ChatID: ref.chat, ThreadID: ref.thread, Text: part.text, ReplyMarkup: keyboard(choicePrefix, token, labels), LinkPreview: noPreview()}
+	token := g.menus.put(ref.chatRef.String(), ref.String(), values, labels)
+	speak := g.voices.menuSpeakerAt(ref)
+	part := speak.frame(plain(prompt).tail(speak.budget()))
+	out := tgctl.OutgoingMessage{ChatID: ref.chat, ThreadID: ref.thread, Text: part.text, Entities: part.entities, ReplyMarkup: keyboard(choicePrefix, token, labels), LinkPreview: noPreview()}
 	if target, parseErr := parseMessageID(string(replyTo)); parseErr == nil {
 		out.ReplyParameters = &tgctl.ReplyParameters{MessageID: target, AllowSendingWithoutReply: true}
 	}
-	_, err = g.api.SendMessage(ctx, out)
+	_, err = speak.api.SendMessage(ctx, out)
 	return err
 }
 

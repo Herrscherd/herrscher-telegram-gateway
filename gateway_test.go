@@ -86,8 +86,10 @@ func TestARefusedMessageCostsNothingAndReachesNoSession(t *testing.T) {
 	if len(ctrl.submitted["tg-n100600"]) != 0 || ctrl.repoCalls != 0 || len(ctrl.created) != 0 {
 		t.Fatalf("a refused message did work: repos %d, created %v", ctrl.repoCalls, ctrl.created)
 	}
-	if keys := laneKeys(gateway); !slices.Equal(keys, []string{"in/-100500", "out/-100500"}) {
-		t.Fatalf("lanes = %v, a refused message was queued", keys)
+	for _, key := range laneKeys(gateway) {
+		if key != inboundLane+"-100500" && key != outboundLane+"-100500" {
+			t.Fatalf("lane %q was queued for a refused message", key)
+		}
 	}
 	if sent := fake.callsTo("sendMessage"); len(sent) != 0 {
 		t.Fatalf("a refused message was answered: %d messages", len(sent))

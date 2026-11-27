@@ -50,8 +50,8 @@ type turnView struct {
 }
 
 type sink struct {
-	conv    chatRef
-	api     bot
+	conv    address
+	speak   speaker
 	msgs    messages
 	log     *slog.Logger
 	now     func() time.Time
@@ -124,7 +124,7 @@ func (s *sink) ack(ctx context.Context) {
 	if s.turn.prompt == 0 {
 		return
 	}
-	if err := s.api.SetMessageReaction(ctx, s.conv.chat, s.turn.prompt, ackEmoji); err != nil {
+	if err := s.speak.api.SetMessageReaction(ctx, s.conv.chat, s.turn.prompt, ackEmoji); err != nil {
 		s.log.Warn("ack reaction failed", "err", err)
 		return
 	}
@@ -139,7 +139,7 @@ func (s *sink) swapAck(ctx context.Context, emoji string) {
 	if s.acked == 0 {
 		return
 	}
-	if err := s.api.SetMessageReaction(ctx, s.conv.chat, s.acked, emoji); err != nil {
+	if err := s.speak.api.SetMessageReaction(ctx, s.conv.chat, s.acked, emoji); err != nil {
 		s.log.Warn("outcome reaction failed", "err", err)
 	}
 	s.acked = 0
@@ -161,8 +161,8 @@ func (s *sink) chunk(ctx context.Context, text string) {
 }
 
 func (s *sink) draft(ctx context.Context) {
-	view := formatMarkdown(s.turn.text).tail(messageMaxUnits)
-	err := s.api.SendMessageDraft(ctx, tgctl.MessageDraft{
+	view := s.speak.frame(formatMarkdown(s.turn.text).tail(s.speak.budget()))
+	err := s.speak.api.SendMessageDraft(ctx, tgctl.MessageDraft{
 		ChatID: s.conv.chat, ThreadID: s.conv.thread, DraftID: s.turn.draftID,
 		Text: view.text, Entities: view.entities, CanStop: true,
 	})
@@ -170,17 +170,18 @@ func (s *sink) draft(ctx context.Context) {
 }
 
 func (s *sink) edit(ctx context.Context) {
-	view := plain(s.turn.text).tail(messageMaxUnits)
+	view := plain(s.turn.text).tail(s.speak.budget())
 	if view.text == "" || view.text == s.turn.shown {
 		return
 	}
 	var err error
 	if s.turn.live == 0 {
 		var sent tgctl.Message
-		sent, err = s.api.SendMessage(ctx, s.outgoing(view, noReplyToNobody))
+		sent, err = s.speak.api.SendMessage(ctx, s.outgoing(view, noReplyToNobody))
 		s.turn.live = sent.MessageID
 	} else {
-		err = s.api.EditMessageText(ctx, tgctl.EditMessageText{ChatID: s.conv.chat, MessageID: s.turn.live, Text: view.text, LinkPreview: noPreview()})
+		framed := s.speak.frame(view)
+		err = s.speak.api.EditMessageText(ctx, tgctl.EditMessageText{ChatID: s.conv.chat, MessageID: s.turn.live, Text: framed.text, Entities: framed.entities, LinkPreview: noPreview()})
 	}
 	if err == nil || errors.Is(err, tgctl.ErrNotModified) {
 		s.turn.shown = view.text
@@ -202,8 +203,8 @@ func (s *sink) after(err error, interval time.Duration) time.Time {
 
 func (s *sink) abandon(ctx context.Context) {
 	if s.turn != nil && s.turn.live != 0 {
-		text := s.msgs.say(turnDroppedKey, nil)
-		if err := s.api.EditMessageText(ctx, tgctl.EditMessageText{ChatID: s.conv.chat, MessageID: s.turn.live, Text: text}); err != nil {
+		text := s.speak.frame(plain(s.msgs.say(turnDroppedKey, nil)))
+		if err := s.speak.api.EditMessageText(ctx, tgctl.EditMessageText{ChatID: s.conv.chat, MessageID: s.turn.live, Text: text.text, Entities: text.entities}); err != nil {
 			s.log.Warn("abandoned render failed", "err", err)
 		}
 	}
@@ -212,7 +213,7 @@ func (s *sink) abandon(ctx context.Context) {
 }
 
 func (s *sink) finish(ctx context.Context, event contracts.Event) {
-	parts := s.answer(event).split(messageMaxUnits)
+	parts := s.answer(event).split(s.speak.budget())
 	shown := turnView{}
 	if s.turn != nil {
 		shown = *s.turn
@@ -260,10 +261,11 @@ func (s *sink) replace(ctx context.Context, shown turnView, part formatted) {
 	if part.text == shown.shown && len(part.entities) == 0 {
 		return
 	}
-	edit := tgctl.EditMessageText{ChatID: s.conv.chat, MessageID: shown.live, Text: part.text, Entities: part.entities, LinkPreview: noPreview()}
-	err := s.api.EditMessageText(ctx, edit)
+	framed := s.speak.frame(part)
+	edit := tgctl.EditMessageText{ChatID: s.conv.chat, MessageID: shown.live, Text: framed.text, Entities: framed.entities, LinkPreview: noPreview()}
+	err := s.speak.api.EditMessageText(ctx, edit)
 	if wait, limited := tgctl.RetryAfter(err); limited && pause(ctx, wait) {
-		err = s.api.EditMessageText(ctx, edit)
+		err = s.speak.api.EditMessageText(ctx, edit)
 	}
 	if err != nil && !errors.Is(err, tgctl.ErrNotModified) {
 		s.log.Warn("final edit failed, the answer is sent anew", "err", err)
@@ -272,9 +274,9 @@ func (s *sink) replace(ctx context.Context, shown turnView, part formatted) {
 }
 
 func (s *sink) send(ctx context.Context, out tgctl.OutgoingMessage) {
-	_, err := s.api.SendMessage(ctx, out)
+	_, err := s.speak.api.SendMessage(ctx, out)
 	if wait, limited := tgctl.RetryAfter(err); limited && pause(ctx, wait) {
-		_, err = s.api.SendMessage(ctx, out)
+		_, err = s.speak.api.SendMessage(ctx, out)
 	}
 	if err != nil {
 		s.log.Warn("answer part not sent", "err", err)
@@ -282,11 +284,7 @@ func (s *sink) send(ctx context.Context, out tgctl.OutgoingMessage) {
 }
 
 func (s *sink) outgoing(part formatted, replyTo int64) tgctl.OutgoingMessage {
-	out := tgctl.OutgoingMessage{ChatID: s.conv.chat, ThreadID: s.conv.thread, Text: part.text, Entities: part.entities, LinkPreview: noPreview()}
-	if replyTo != 0 {
-		out.ReplyParameters = &tgctl.ReplyParameters{MessageID: replyTo, AllowSendingWithoutReply: true}
-	}
-	return out
+	return s.speak.message(s.conv, replyTo, part)
 }
 
 func noPreview() *tgctl.LinkPreviewOptions { return &tgctl.LinkPreviewOptions{IsDisabled: true} }
