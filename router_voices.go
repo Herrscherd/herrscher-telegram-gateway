@@ -66,6 +66,13 @@ func tokenlessChannel(voices []contracts.AgentVoice, bots *voiceBots, conv chatR
 	return "", false
 }
 
+func capturingAgent(voices []contracts.AgentVoice, bots *voiceBots, text string, conv chatRef) (string, bool) {
+	if agent, ok := tokenlessMention(voices, bots, text); ok {
+		return agent, true
+	}
+	return tokenlessChannel(voices, bots, conv)
+}
+
 func pendingHold(voices []contracts.AgentVoice, bots *voiceBots, text string, conv chatRef) (string, bool) {
 	for _, voice := range voices {
 		if voice.Reply == contracts.ReplyNever || !bots.signingIn(voice.Agent) {
@@ -108,13 +115,8 @@ func (r *router) routeHouse(from origin, msg *tgctl.Message, base chatRef, voice
 	if !houseMentioned && r.voices.mentionsAgentBot(raw, entities) {
 		return nil
 	}
-	if !houseMentioned {
-		if agent, ok := tokenlessMention(voices, r.voices, raw); ok {
-			return []addressee{{conv: address{chatRef: base, agent: agent}, text: plainText(msg)}}
-		}
-	}
 	var targets []addressee
-	if agent, ok := tokenlessChannel(voices, r.voices, base); ok {
+	if agent, ok := capturingAgent(voices, r.voices, raw, base); ok {
 		capture := addressee{conv: address{chatRef: base, agent: agent}, text: plainText(msg)}
 		if !houseMentioned {
 			return []addressee{capture}
