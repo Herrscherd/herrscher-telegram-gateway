@@ -318,7 +318,7 @@ func (g *Gateway) later(ctx context.Context, conv address, next job) bool {
 
 func (g *Gateway) noteUser(ctx context.Context, conv address, noted notedPrompt) {
 	target := g.sinkFor(conv)
-	g.lanes.push(ctx, outboundLane+conv.String(), func(context.Context) { target.noteUser(noted) })
+	g.lanes.push(ctx, outboundLane+conv.String(), func(ctx context.Context) { target.noteUser(ctx, noted) })
 }
 
 func (g *Gateway) accepted(ctx context.Context, conv address, noted notedPrompt) {

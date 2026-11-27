@@ -158,7 +158,9 @@ sends its author and text on `abandoned` (added by the herrscher pull request
 for issue 206), and by its position otherwise. The prompt gets a 👀 reaction
 while its turn runs. It is cleared when the turn completes, swapped for 💔 when
 the turn failed, and a failed or stopped turn also says so in its last line. A
-rate limit from Telegram (`retry_after`) is waited out.
+prompt that ends before any turn starts, dropped by the host or closed by a
+`Done` with no turn open, loses its 👀 the same way. A rate limit from Telegram
+(`retry_after`) is waited out.
 
 Answers are formatted with message entities, never with escaped MarkdownV2: the
 gateway reads the Markdown a model writes (bold, italic, strikethrough, inline

@@ -77,7 +77,7 @@ func (s *sink) speaker() speaker { return s.voices.speakerAt(s.conv) }
 func (s *sink) apply(ctx context.Context, event contracts.Event) {
 	switch event.T {
 	case eventHuman:
-		s.begin(event.Who, event.Text)
+		s.begin(ctx, event.Who, event.Text)
 	case eventChunk:
 		s.chunk(ctx, event.Text)
 	case eventReset:
@@ -85,7 +85,7 @@ func (s *sink) apply(ctx context.Context, event contracts.Event) {
 			s.turn.text = ""
 		}
 	case eventAbandoned:
-		s.dropAbandoned(event)
+		s.dropAbandoned(ctx, event)
 		s.abandon(ctx)
 	case eventReply:
 		if event.Done {
@@ -94,13 +94,14 @@ func (s *sink) apply(ctx context.Context, event contracts.Event) {
 	}
 }
 
-func (s *sink) noteUser(noted notedPrompt) {
+func (s *sink) noteUser(ctx context.Context, noted notedPrompt) {
 	s.awaitingAck[noted.note] = ackOutcome{}
 	if s.turn != nil && s.turn.prompt == 0 && noted.asks(s.turn.asked.author, s.turn.asked.text) {
 		s.turn.prompt, s.turn.promptNote = noted.id, noted.note
 		return
 	}
 	if len(s.prompts) == laneDepth {
+		s.endAck(ctx, &s.prompts[0], "")
 		s.prompts = s.prompts[1:]
 	}
 	s.prompts = append(s.prompts, noted)
@@ -138,29 +139,48 @@ func (s *sink) forgetUser(noted notedPrompt) {
 	s.prompts = slices.DeleteFunc(s.prompts, func(kept notedPrompt) bool { return kept.note == noted.note })
 }
 
-func (s *sink) dropAbandoned(event contracts.Event) {
+func (s *sink) dropAbandoned(ctx context.Context, event contracts.Event) {
 	if s.turn != nil || len(s.prompts) == 0 {
 		return
 	}
 	if event.Who != "" || event.Text != "" {
-		s.claim(event.Who, event.Text)
+		if claimed, found := s.claim(ctx, event.Who, event.Text); found {
+			s.endAck(ctx, &claimed, "")
+		}
 		return
 	}
+	s.endAck(ctx, &s.prompts[0], "")
 	s.prompts = s.prompts[1:]
 }
 
-func (s *sink) claim(author, text string) notedPrompt {
-	for index, noted := range s.prompts {
-		if noted.asks(author, text) {
-			s.prompts = s.prompts[index+1:]
-			return noted
+func (s *sink) claim(ctx context.Context, author, text string) (notedPrompt, bool) {
+	for index := range s.prompts {
+		if !s.prompts[index].asks(author, text) {
+			continue
 		}
+		for skipped := range s.prompts[:index] {
+			s.endAck(ctx, &s.prompts[skipped], "")
+		}
+		claimed := s.prompts[index]
+		s.prompts = s.prompts[index+1:]
+		return claimed, true
 	}
-	return notedPrompt{}
+	return notedPrompt{}, false
 }
 
-func (s *sink) begin(author, text string) {
-	claimed := s.claim(author, text)
+func (s *sink) endAck(ctx context.Context, noted *notedPrompt, emoji string) {
+	if _, waiting := s.awaitingAck[noted.note]; waiting {
+		s.awaitingAck[noted.note] = ackOutcome{ended: true, emoji: emoji}
+		return
+	}
+	if noted.accepted {
+		noted.accepted = false
+		s.react(ctx, noted.id, emoji)
+	}
+}
+
+func (s *sink) begin(ctx context.Context, author, text string) {
+	claimed, _ := s.claim(ctx, author, text)
 	s.turn = &turnView{draftID: s.drafts.Add(1), asked: notedPrompt{author: author, text: text}, prompt: claimed.id, promptNote: claimed.note}
 	if claimed.accepted {
 		s.acked = claimed.id
@@ -205,7 +225,7 @@ func (s *sink) endTurn(ctx context.Context, emoji string) {
 
 func (s *sink) chunk(ctx context.Context, text string) {
 	if s.turn == nil {
-		s.begin("", "")
+		s.begin(ctx, "", "")
 	}
 	s.turn.text += text
 	if s.now().Before(s.turn.nextFlush) {
@@ -286,11 +306,22 @@ func (s *sink) finish(ctx context.Context, event contracts.Event) {
 		}
 		s.send(ctx, s.outgoing(part, replyTo))
 	}
-	emoji := ""
-	if event.Outcome == contracts.TurnFailed {
-		emoji = failedEmoji
-	}
+	emoji := outcomeEmoji(event)
+	s.clearHeadAck(ctx, emoji)
 	s.endTurn(ctx, emoji)
+}
+
+func (s *sink) clearHeadAck(ctx context.Context, emoji string) {
+	if s.turn == nil && len(s.prompts) > 0 {
+		s.endAck(ctx, &s.prompts[0], emoji)
+	}
+}
+
+func outcomeEmoji(event contracts.Event) string {
+	if event.Outcome == contracts.TurnFailed {
+		return failedEmoji
+	}
+	return ""
 }
 
 func (s *sink) answer(event contracts.Event) formatted {
