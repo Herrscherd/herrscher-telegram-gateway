@@ -182,12 +182,13 @@ func (r *router) heldMessages() int {
 
 func (r *router) handle(ctx context.Context, from origin, msg *tgctl.Message, members []*tgctl.Message) {
 	ctrl := r.ctrl()
+	refusalShown := false
 	for _, target := range r.route(from, msg, voicesOf(ctrl)) {
-		r.answer(ctx, from, ctrl, msg, members, target)
+		r.answer(ctx, from, ctrl, msg, members, target, &refusalShown)
 	}
 }
 
-func (r *router) answer(ctx context.Context, from origin, ctrl contracts.SessionControl, msg *tgctl.Message, members []*tgctl.Message, target addressee) {
+func (r *router) answer(ctx context.Context, from origin, ctrl contracts.SessionControl, msg *tgctl.Message, members []*tgctl.Message, target addressee, refusalShown *bool) {
 	conv, text := target.conv, target.text
 	if ctrl == nil {
 		r.post(ctx, conv, r.msgs.say(notReadyKey, nil))
@@ -203,7 +204,8 @@ func (r *router) answer(ctx context.Context, from origin, ctrl contracts.Session
 		attachments = append(attachments, r.files.stage(ctx, from.api, conv, member)...)
 		offered += len(filesOf(member))
 	}
-	if len(attachments) < offered {
+	if len(attachments) < offered && !*refusalShown {
+		*refusalShown = true
 		r.post(ctx, conv, r.msgs.say(fileRefusedKey, nil))
 	}
 	if text == "" && len(attachments) == 0 {
