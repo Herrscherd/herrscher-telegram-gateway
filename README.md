@@ -170,8 +170,10 @@ the prompt stays queued, since nothing says which message the `Done` answers, an
 a turn that starts after it gets its 👀 back. When several agents answer the same
 message, the 👀 is
 shared: it is posted when the first of them accepts the message, stays up until
-the last one ends, and is swapped for 💔 if any of them failed. A rate limit
-from Telegram (`retry_after`) is waited out.
+the last one ends, and is swapped for 💔 if any of them failed. When Telegram
+refuses the 👀 itself, the failure is only logged: a later turn on the same
+message does not post it again while the turns sharing it are still open. A
+rate limit from Telegram (`retry_after`) is waited out.
 
 Answers are formatted with message entities, never with escaped MarkdownV2: the
 gateway reads the Markdown a model writes (bold, italic, strikethrough, inline
