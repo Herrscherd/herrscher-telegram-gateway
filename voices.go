@@ -1,7 +1,6 @@
 package telegram
 
 import (
-	"context"
 	"sync"
 
 	"github.com/Herrscherd/tgctl"
@@ -26,17 +25,17 @@ type voiceBots struct {
 
 	mu      sync.Mutex
 	own     map[string]ownBot
-	signing map[string]chan struct{}
+	signing map[string]struct{}
 }
 
 func newVoiceBots(house bot, self tgctl.User) *voiceBots {
-	return &voiceBots{house: house, self: self, own: make(map[string]ownBot), signing: make(map[string]chan struct{})}
+	return &voiceBots{house: house, self: self, own: make(map[string]ownBot), signing: make(map[string]struct{})}
 }
 
 func (b *voiceBots) expect(agent string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.signing[agent] = make(chan struct{})
+	b.signing[agent] = struct{}{}
 }
 
 func (b *voiceBots) admit(agent string, client bot, self tgctl.User) bool {
@@ -57,11 +56,6 @@ func (b *voiceBots) refuse(agent string) {
 }
 
 func (b *voiceBots) settleLocked(agent string) {
-	ready, pending := b.signing[agent]
-	if !pending {
-		return
-	}
-	close(ready)
 	delete(b.signing, agent)
 }
 
@@ -77,19 +71,11 @@ func (b *voiceBots) ownsLocked(botID int64) bool {
 	return false
 }
 
-func (b *voiceBots) awaitSignIn(ctx context.Context, agent string) error {
+func (b *voiceBots) signingIn(agent string) bool {
 	b.mu.Lock()
-	ready, pending := b.signing[agent]
-	b.mu.Unlock()
-	if !pending {
-		return nil
-	}
-	select {
-	case <-ready:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	defer b.mu.Unlock()
+	_, pending := b.signing[agent]
+	return pending
 }
 
 func (b *voiceBots) ownOf(agent string) (ownBot, bool) {

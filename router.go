@@ -184,7 +184,8 @@ func (r *router) heldMessages() int {
 func (r *router) handle(ctx context.Context, from origin, msg *tgctl.Message, members []*tgctl.Message) {
 	ctrl := r.ctrl()
 	voices := voicesOf(ctrl)
-	if err := r.awaitSignIns(ctx, from, msg, voices); err != nil {
+	if agent, signing := r.signingVoiceReached(from, msg, voices); signing {
+		r.log.Info("message dropped, its agent is still signing in", "agent", agent)
 		return
 	}
 	conv, text, addressed := r.route(from, msg, voices)
@@ -225,9 +226,9 @@ func (r *router) handle(ctx context.Context, from origin, msg *tgctl.Message, me
 	r.askRepo(ctx, ctrl, conv, msg.From.ID, inbound)
 }
 
-func (r *router) awaitSignIns(ctx context.Context, from origin, msg *tgctl.Message, voices []contracts.AgentVoice) error {
+func (r *router) signingVoiceReached(from origin, msg *tgctl.Message, voices []contracts.AgentVoice) (string, bool) {
 	if !from.house() {
-		return nil
+		return "", false
 	}
 	raw, _ := textOf(msg)
 	base := conversationOf(msg)
@@ -235,11 +236,11 @@ func (r *router) awaitSignIns(ctx context.Context, from origin, msg *tgctl.Messa
 		if voice.Reply == contracts.ReplyNever || !reachesVoice(voice, raw, base) {
 			continue
 		}
-		if err := r.voices.awaitSignIn(ctx, voice.Agent); err != nil {
-			return err
+		if r.voices.signingIn(voice.Agent) {
+			return voice.Agent, true
 		}
 	}
-	return nil
+	return "", false
 }
 
 func reachesVoice(voice contracts.AgentVoice, raw string, base chatRef) bool {

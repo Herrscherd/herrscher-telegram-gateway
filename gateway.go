@@ -76,7 +76,7 @@ func newGateway(ctx context.Context, api bot, set settings, self tgctl.User, msg
 	voices := newVoiceBots(api, self)
 	gateway := &Gateway{
 		api: api, self: self, voices: voices, dial: dial, msgs: msgs, log: log,
-		menus: newMenuTable(), lanes: newLanes(log), life: life, cancel: cancel, now: time.Now, album: albumWindow,
+		menus: newMenuTable(), lanes: newLanes(), life: life, cancel: cancel, now: time.Now, album: albumWindow,
 		sinks: make(map[string]*sink),
 	}
 	gateway.drafts.Store(gateway.now().UnixMilli())
@@ -108,9 +108,9 @@ func (g *Gateway) Manifest() contracts.Manifest {
 // BindSessionControl receives the daemon's session controller and starts the
 // long polling loops: the house bot's, then one for each agent voice that has
 // its own token. Each such voice signs in before the binding returns, so it
-// speaks through its own bot from then on. A message that could reach a voice
-// still signing in waits for that sign-in in its own conversation. Only the
-// first binding starts them, and none after Close.
+// speaks through its own bot from then on. A message that names a voice still
+// signing in is dropped until that sign-in settles, at most 10 seconds later.
+// Only the first binding starts them, and none after Close.
 func (g *Gateway) BindSessionControl(ctrl contracts.SessionControl) {
 	signedIn := g.startPolling(ctrl, directoryVoices(ctrl))
 	if signedIn == nil {
