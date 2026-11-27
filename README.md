@@ -90,11 +90,11 @@ reads that list for each message.
   agent. A token that cannot sign in is logged without the token, skipped, and
   its agent falls back to the house bot under its header.
 - A message that names an agent still signing in (`@agent` in the text, or a
-  `channels` chat of that agent) waits for its sign-in, in its own conversation
-  only, and is then decided with the final state: by the agent's bot, or by the
-  house under the header if the sign-in failed. So a voice whose token signs in
-  never speaks through the house bot, and no message is lost to the wait. The
-  other conversations are not held.
+  `channels` chat of that agent) is dropped during the sign-in window, which
+  lasts at most 10 seconds, and logged with the agent's name, never its token.
+  The house never answers it under that agent's header. Once the sign-in
+  settles, the agent's own bot handles the later messages, or, if the sign-in
+  failed, the house answers for that agent under its header.
 - A text `@agent` that is not a real mention of the agent's bot is not seen by
   that bot under privacy mode, and once the agent has its own bot the house
   never answers it under that agent's header. To reach an agent with its own
