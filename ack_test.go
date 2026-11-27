@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -199,8 +200,21 @@ func TestTheTurnAfterAnEarlyDoneGetsItsAck(t *testing.T) {
 	gateway.EmitTo(conv, contracts.Event{T: eventChunk, Text: "working"})
 	settle(t, gateway, conv.ID)
 
-	if got := lastReaction(t, fake); got.MessageID != 10 || len(got.Reaction) != 1 || got.Reaction[0].Emoji != ackEmoji {
-		t.Fatalf("the turn for prompt 10 runs with reaction %+v, want %s", got, ackEmoji)
+	fake.waitCalls(t, "setMessageReaction", 3)
+	var emojis []string
+	for _, call := range fake.callsTo("setMessageReaction") {
+		got := decodeCall[reactionCall](t, call)
+		if got.MessageID != 10 {
+			t.Fatalf("a reaction went to message %d, want message 10", got.MessageID)
+		}
+		emoji := ""
+		if len(got.Reaction) == 1 {
+			emoji = got.Reaction[0].Emoji
+		}
+		emojis = append(emojis, emoji)
+	}
+	if want := []string{ackEmoji, "", ackEmoji}; !slices.Equal(emojis, want) {
+		t.Fatalf("message 10 reacts %q, want the ack, its clear, then the ack again %q", emojis, want)
 	}
 }
 
