@@ -2,6 +2,9 @@ package telegram
 
 import (
 	"context"
+	"log/slog"
+	"math"
+	"slices"
 	"sync"
 	"time"
 )
@@ -9,7 +12,9 @@ import (
 const (
 	updatesPerPoll = 100
 	laneDepth      = updatesPerPoll
+	laneBacklog    = 10 * laneDepth
 	laneIdleAfter  = 5 * time.Minute
+	flushRoom      = math.MaxInt
 )
 
 type lifetime func() context.Context
@@ -17,8 +22,8 @@ type lifetime func() context.Context
 type job func(ctx context.Context)
 
 type lane struct {
-	jobs    chan job
-	senders int
+	jobs   chan job
+	parked []job
 }
 
 type lanes struct {
@@ -26,33 +31,22 @@ type lanes struct {
 	queues  map[string]*lane
 	stopped bool
 	idle    time.Duration
+	log     *slog.Logger
 	workers sync.WaitGroup
 }
 
-func newLanes() *lanes {
-	return &lanes{queues: make(map[string]*lane), idle: laneIdleAfter}
+func newLanes(log *slog.Logger) *lanes {
+	return &lanes{queues: make(map[string]*lane), idle: laneIdleAfter, log: log}
 }
 
-func (l *lanes) acquire(ctx context.Context, key string) (*lane, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.stopped {
-		return nil, false
-	}
+func (l *lanes) laneLocked(ctx context.Context, key string) *lane {
 	found, ok := l.queues[key]
 	if !ok {
 		found = &lane{jobs: make(chan job, laneDepth)}
 		l.queues[key] = found
 		l.workers.Go(func() { l.work(ctx, key, found) })
 	}
-	found.senders++
-	return found, true
-}
-
-func (l *lanes) release(target *lane) {
-	l.mu.Lock()
-	target.senders--
-	l.mu.Unlock()
+	return found
 }
 
 func (l *lanes) work(ctx context.Context, key string, target *lane) {
@@ -63,6 +57,7 @@ func (l *lanes) work(ctx context.Context, key string, target *lane) {
 		case <-ctx.Done():
 			return
 		case next := <-target.jobs:
+			l.promote(target)
 			next(ctx)
 			timer.Reset(l.idle)
 		case <-timer.C:
@@ -74,42 +69,64 @@ func (l *lanes) work(ctx context.Context, key string, target *lane) {
 	}
 }
 
+func (l *lanes) promote(target *lane) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for len(target.parked) > 0 {
+		select {
+		case target.jobs <- target.parked[0]:
+			target.parked = slices.Delete(target.parked, 0, 1)
+		default:
+			return
+		}
+	}
+}
+
 func (l *lanes) retire(key string, target *lane) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if target.senders > 0 || len(target.jobs) > 0 {
+	if len(target.jobs) > 0 || len(target.parked) > 0 {
 		return false
 	}
 	delete(l.queues, key)
 	return true
 }
 
-func (l *lanes) offer(ctx context.Context, key string, next job) bool {
-	target, open := l.acquire(ctx, key)
-	if !open {
+func (l *lanes) enqueue(ctx context.Context, key string, next job, room int) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.stopped {
 		return false
 	}
-	defer l.release(target)
-	select {
-	case target.jobs <- next:
+	target := l.laneLocked(ctx, key)
+	if len(target.parked) == 0 {
+		select {
+		case target.jobs <- next:
+			return true
+		default:
+		}
+	}
+	if len(target.parked) >= room {
+		return false
+	}
+	target.parked = append(target.parked, next)
+	return true
+}
+
+func (l *lanes) admit(ctx context.Context, key string, next job, room int) bool {
+	if l.enqueue(ctx, key, next, room) {
 		return true
-	default:
-		return false
 	}
+	l.log.Warn("work dropped, the gateway is stopping or the conversation has too much waiting", "lane", key)
+	return false
+}
+
+func (l *lanes) offer(ctx context.Context, key string, next job) bool {
+	return l.enqueue(ctx, key, next, 0)
 }
 
 func (l *lanes) push(ctx context.Context, key string, next job) bool {
-	target, open := l.acquire(ctx, key)
-	if !open {
-		return false
-	}
-	defer l.release(target)
-	select {
-	case target.jobs <- next:
-		return true
-	case <-ctx.Done():
-		return false
-	}
+	return l.admit(ctx, key, next, laneBacklog)
 }
 
 func (l *lanes) later(ctx context.Context, key string, delay time.Duration, next job) bool {
@@ -124,7 +141,7 @@ func (l *lanes) later(ctx context.Context, key string, delay time.Duration, next
 		select {
 		case <-ctx.Done():
 		case <-timer.C:
-			l.push(ctx, key, next)
+			l.admit(ctx, key, next, flushRoom)
 		}
 	})
 	return true

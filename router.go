@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
 
@@ -51,9 +52,11 @@ type router struct {
 	files      stager
 	ctrl       func() contracts.SessionControl
 	noteUser   func(ctx context.Context, conv address, noted notedPrompt)
+	accepted   func(ctx context.Context, conv address, noted notedPrompt)
 	forgetUser func(ctx context.Context, conv address, noted notedPrompt)
 	later      func(ctx context.Context, conv address, next job) bool
 
+	notes   atomic.Uint64
 	mu      sync.Mutex
 	pending map[string]pendingBind
 	albums  map[string]*heldAlbum
@@ -399,16 +402,16 @@ func (r *router) deliver(ctx context.Context, ctrl contracts.SessionControl, con
 		}
 	}
 	messageID, idErr := parseMessageID(string(inbound.MessageID))
-	prompt := notedPrompt{id: messageID, author: inbound.Author, text: inbound.Text}
-	if idErr == nil {
-		r.noteUser(ctx, conv, prompt)
+	if idErr != nil {
+		return ctrl.Submit(session, inbound)
 	}
+	prompt := notedPrompt{id: messageID, author: inbound.Author, text: inbound.Text, note: r.notes.Add(1)}
+	r.noteUser(ctx, conv, prompt)
 	if ctrl.Submit(session, inbound) {
+		r.accepted(ctx, conv, prompt)
 		return true
 	}
-	if idErr == nil {
-		r.forgetUser(ctx, conv, prompt)
-	}
+	r.forgetUser(ctx, conv, prompt)
 	return false
 }
 

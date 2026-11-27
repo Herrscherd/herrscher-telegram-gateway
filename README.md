@@ -92,7 +92,7 @@ reads that list for each message.
 - A message that names an agent still signing in (`@agent` in the text, or a
   `channels` chat of that agent) waits for its sign-in, in its own conversation
   only, and is then decided with the final state: by the agent's bot, or by the
-  house under the header if the sign-in failed. So a voice with a valid token
+  house under the header if the sign-in failed. So a voice whose token signs in
   never speaks through the house bot, and no message is lost to the wait. The
   other conversations are not held.
 - A text `@agent` that is not a real mention of the agent's bot is not seen by

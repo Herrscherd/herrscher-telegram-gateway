@@ -76,7 +76,7 @@ func newGateway(ctx context.Context, api bot, set settings, self tgctl.User, msg
 	voices := newVoiceBots(api, self)
 	gateway := &Gateway{
 		api: api, self: self, voices: voices, dial: dial, msgs: msgs, log: log,
-		menus: newMenuTable(), lanes: newLanes(), life: life, cancel: cancel, now: time.Now, album: albumWindow,
+		menus: newMenuTable(), lanes: newLanes(log), life: life, cancel: cancel, now: time.Now, album: albumWindow,
 		sinks: make(map[string]*sink),
 	}
 	gateway.drafts.Store(gateway.now().UnixMilli())
@@ -85,6 +85,7 @@ func newGateway(ctx context.Context, api bot, set settings, self tgctl.User, msg
 		files:      stager{root: stagingRoot(), log: log},
 		ctrl:       gateway.control,
 		noteUser:   gateway.noteUser,
+		accepted:   gateway.accepted,
 		forgetUser: gateway.forgetUser,
 		later:      gateway.later,
 		pending:    make(map[string]pendingBind),
@@ -273,10 +274,7 @@ func (g *Gateway) dispatch(ctx context.Context, from origin, next tgctl.Update) 
 		g.onStopped(ctx, from, stopped)
 		return
 	}
-	key := laneKeyOf(next)
-	if !g.lanes.push(ctx, inboundLane+key, func(ctx context.Context) { g.router.onUpdate(ctx, from, next) }) {
-		g.log.Warn("update dropped, the gateway is stopping", "update", next.UpdateID)
-	}
+	g.lanes.push(ctx, inboundLane+laneKeyOf(next), func(ctx context.Context) { g.router.onUpdate(ctx, from, next) })
 }
 
 func (g *Gateway) sinkFor(conv address) *sink {
@@ -328,7 +326,12 @@ func (g *Gateway) later(ctx context.Context, conv address, next job) bool {
 
 func (g *Gateway) noteUser(ctx context.Context, conv address, noted notedPrompt) {
 	target := g.sinkFor(conv)
-	g.lanes.push(ctx, outboundLane+conv.String(), func(ctx context.Context) { target.noteUser(ctx, noted) })
+	g.lanes.push(ctx, outboundLane+conv.String(), func(context.Context) { target.noteUser(noted) })
+}
+
+func (g *Gateway) accepted(ctx context.Context, conv address, noted notedPrompt) {
+	target := g.sinkFor(conv)
+	g.lanes.push(ctx, outboundLane+conv.String(), func(ctx context.Context) { target.accepted(ctx, noted) })
 }
 
 func (g *Gateway) forgetUser(ctx context.Context, conv address, noted notedPrompt) {
@@ -350,9 +353,7 @@ func (g *Gateway) EmitTo(conv contracts.Conversation, event contracts.Event) {
 		g.lanes.offer(g.life(), outboundLane+ref.String(), work)
 		return
 	}
-	if !g.lanes.push(g.life(), outboundLane+ref.String(), work) {
-		g.log.Warn("turn event dropped, the gateway is stopping", "event", event.T)
-	}
+	g.lanes.push(g.life(), outboundLane+ref.String(), work)
 }
 
 // Emit drops an unrouted event: without a conversation there is nothing to

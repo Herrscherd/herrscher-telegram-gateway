@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,9 +42,11 @@ func (s stuckSignIn) GetMe(context.Context) (tgctl.User, error) {
 	return tgctl.User{}, errors.New("released")
 }
 
-func unboundGateway(t *testing.T, fake *fakeTelegram, dial func(token string) bot) *Gateway {
+func unboundGateway(t *testing.T, fake *fakeTelegram, dial func(token string) bot, extra map[string]string) *Gateway {
 	t.Helper()
-	cfg := contracts.PluginConfig{Settings: map[string]string{tokenSetting: testToken, ownerSetting: "42"}}
+	values := map[string]string{tokenSetting: testToken, ownerSetting: "42"}
+	maps.Copy(values, extra)
+	cfg := contracts.PluginConfig{Settings: values}
 	set, err := newGatewaySet(t.Context(), cfg, fake.server.URL, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("build the gateway: %v", err)
@@ -63,7 +66,7 @@ func TestTheHouseIsServedWhileAnAgentTokenIsStillSigningIn(t *testing.T) {
 	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "ana", voiceToken, contracts.ReplyOnMention)}
 	gateway := unboundGateway(t, fake, func(token string) bot {
 		return hangingSignIn{bot: tgctl.New(token, tgctl.WithBaseURL(fake.server.URL))}
-	})
+	}, nil)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
 		defer cancel()
@@ -86,7 +89,7 @@ func TestCloseReturnsAtItsDeadlineWhileASignInIgnoresItsContext(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 	gateway := unboundGateway(t, fake, func(token string) bot {
 		return stuckSignIn{bot: tgctl.New(token, tgctl.WithBaseURL(fake.server.URL)), entered: entered, release: release}
-	})
+	}, nil)
 	go gateway.BindSessionControl(ctrl)
 	select {
 	case <-entered:
@@ -106,6 +109,61 @@ func TestCloseReturnsAtItsDeadlineWhileASignInIgnoresItsContext(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("close did not return while a sign-in hung")
+	}
+}
+
+func TestAnAddressedMessageInAnotherChatIsSubmittedWhileAnAgentSignInHangs(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.live("tg-42", "42")
+	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "ana", voiceToken, contracts.ReplyOnMention)}
+	gateway := unboundGateway(t, fake, func(token string) bot {
+		return hangingSignIn{bot: tgctl.New(token, tgctl.WithBaseURL(fake.server.URL))}
+	}, map[string]string{chatsSetting: "-100500"})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
+		defer cancel()
+		if err := gateway.Close(ctx); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+	go gateway.BindSessionControl(ctrl)
+
+	batch := make([]tgctl.Update, 0, laneDepth+3)
+	for index := range laneDepth + 2 {
+		batch = append(batch, inGroup(int64(index+1), int64(index+10), testOwner, "@ana review"))
+	}
+	batch = append(batch, privateText(1000, 2000, testOwner, "marker"))
+	started := time.Now()
+	fake.push(batch...)
+	ctrl.waitFor(t, "the marker in another chat", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 1 })
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("a message in another chat waited %s behind an agent sign-in", elapsed)
+	}
+}
+
+func TestCloseReleasesMessagesParkedBehindASignIn(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.live("tg-42", "42")
+	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "ana", voiceToken, contracts.ReplyOnMention)}
+	gateway := unboundGateway(t, fake, func(token string) bot {
+		return hangingSignIn{bot: tgctl.New(token, tgctl.WithBaseURL(fake.server.URL))}
+	}, map[string]string{chatsSetting: "-100500"})
+	go gateway.BindSessionControl(ctrl)
+
+	batch := make([]tgctl.Update, 0, laneDepth+2)
+	for index := range laneDepth + 2 {
+		batch = append(batch, inGroup(int64(index+1), int64(index+10), testOwner, "@ana review"))
+	}
+	fake.push(batch...)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := gateway.Close(ctx); err != nil {
+		t.Fatalf("close while messages are parked behind a sign-in: %v", err)
+	}
+	if submitted := ctrl.snapshot(func(c *fakeControl) bool { return len(c.submitted) > 0 }); submitted {
+		t.Fatal("a message parked behind a sign-in was submitted after close")
 	}
 }
 
@@ -130,7 +188,7 @@ func TestAnAgentNamedWhileItsSignInIsSlowIsNeverAnsweredByTheHouse(t *testing.T)
 	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "ana", voiceToken, contracts.ReplyOnMention)}
 	gateway := unboundGateway(t, fake, func(token string) bot {
 		return slowSignIn{bot: tgctl.New(token, tgctl.WithBaseURL(fake.server.URL)), delay: 300 * time.Millisecond}
-	})
+	}, nil)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
 		defer cancel()

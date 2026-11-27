@@ -32,9 +32,11 @@ const (
 )
 
 type notedPrompt struct {
-	id     int64
-	author string
-	text   string
+	id       int64
+	author   string
+	text     string
+	note     uint64
+	accepted bool
 }
 
 func (n notedPrompt) asks(author, text string) bool {
@@ -42,13 +44,14 @@ func (n notedPrompt) asks(author, text string) bool {
 }
 
 type turnView struct {
-	text      string
-	draftID   int64
-	asked     notedPrompt
-	prompt    int64
-	live      int64
-	shown     string
-	nextFlush time.Time
+	text       string
+	draftID    int64
+	asked      notedPrompt
+	prompt     int64
+	promptNote uint64
+	live       int64
+	shown      string
+	nextFlush  time.Time
 }
 
 type sink struct {
@@ -85,10 +88,9 @@ func (s *sink) apply(ctx context.Context, event contracts.Event) {
 	}
 }
 
-func (s *sink) noteUser(ctx context.Context, noted notedPrompt) {
+func (s *sink) noteUser(noted notedPrompt) {
 	if s.turn != nil && s.turn.prompt == 0 && noted.asks(s.turn.asked.author, s.turn.asked.text) {
-		s.turn.prompt = noted.id
-		s.ack(ctx)
+		s.turn.prompt, s.turn.promptNote = noted.id, noted.note
 		return
 	}
 	if len(s.prompts) == laneDepth {
@@ -97,11 +99,24 @@ func (s *sink) noteUser(ctx context.Context, noted notedPrompt) {
 	s.prompts = append(s.prompts, noted)
 }
 
-func (s *sink) forgetUser(noted notedPrompt) {
-	if s.turn != nil && s.turn.prompt == noted.id {
-		s.turn.prompt = 0
+func (s *sink) accepted(ctx context.Context, noted notedPrompt) {
+	if s.turn != nil && s.turn.promptNote == noted.note {
+		s.ack(ctx)
+		return
 	}
-	s.prompts = slices.DeleteFunc(s.prompts, func(kept notedPrompt) bool { return kept.id == noted.id })
+	for index := range s.prompts {
+		if s.prompts[index].note == noted.note {
+			s.prompts[index].accepted = true
+			return
+		}
+	}
+}
+
+func (s *sink) forgetUser(noted notedPrompt) {
+	if s.turn != nil && s.turn.promptNote == noted.note {
+		s.turn.prompt, s.turn.promptNote = 0, 0
+	}
+	s.prompts = slices.DeleteFunc(s.prompts, func(kept notedPrompt) bool { return kept.note == noted.note })
 }
 
 func (s *sink) dropAbandoned(event contracts.Event) {
@@ -115,19 +130,22 @@ func (s *sink) dropAbandoned(event contracts.Event) {
 	s.prompts = s.prompts[1:]
 }
 
-func (s *sink) claim(author, text string) int64 {
+func (s *sink) claim(author, text string) notedPrompt {
 	for index, noted := range s.prompts {
 		if noted.asks(author, text) {
 			s.prompts = s.prompts[index+1:]
-			return noted.id
+			return noted
 		}
 	}
-	return 0
+	return notedPrompt{}
 }
 
 func (s *sink) begin(ctx context.Context, author, text string) {
-	s.turn = &turnView{draftID: s.drafts.Add(1), asked: notedPrompt{author: author, text: text}, prompt: s.claim(author, text)}
-	s.ack(ctx)
+	claimed := s.claim(author, text)
+	s.turn = &turnView{draftID: s.drafts.Add(1), asked: notedPrompt{author: author, text: text}, prompt: claimed.id, promptNote: claimed.note}
+	if claimed.accepted {
+		s.ack(ctx)
+	}
 }
 
 func (s *sink) ack(ctx context.Context) {

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -292,6 +293,7 @@ func TestAPrivateTurnStreamsADraftThenRepliesWithEntities(t *testing.T) {
 	settle(t, gateway, conv.ID)
 	fake.push(privateText(1, 10, testOwner, "go"))
 	ctrl.waitFor(t, "the message", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 1 })
+	fake.waitCalls(t, "setMessageReaction", 1)
 	gateway.EmitTo(conv, contracts.Event{T: eventChunk, Text: "working on **it**"})
 	gateway.EmitTo(conv, contracts.Event{T: eventReply, Done: true, Text: "Done with **it**"})
 
@@ -310,6 +312,66 @@ func TestAPrivateTurnStreamsADraftThenRepliesWithEntities(t *testing.T) {
 	acked, cleared := decodeCall[reactionCall](t, calls[0]), decodeCall[reactionCall](t, calls[1])
 	if len(acked.Reaction) != 1 || acked.Reaction[0].Emoji != ackEmoji || acked.MessageID != 10 || cleared.Reaction == nil || len(cleared.Reaction) != 0 {
 		t.Fatalf("reactions = %+v then %+v", acked, cleared)
+	}
+}
+
+type refusingControl struct {
+	*fakeControl
+
+	refusing atomic.Bool
+}
+
+func (c *refusingControl) Submit(name string, in contracts.Inbound) bool {
+	if c.refusing.Load() {
+		return false
+	}
+	return c.fakeControl.Submit(name, in)
+}
+
+func TestARefusedNoteIsWithdrawnAndALaterMessageStillBinds(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := &refusingControl{fakeControl: newFakeControl()}
+	ctrl.live("tg-42", "42")
+	ctrl.refusing.Store(true)
+	gateway := startGateway(t, fake, ctrl, nil)
+	conv := contracts.Conversation{Gateway: gatewayKind, ID: "42"}
+	target := gateway.sinkFor(address{chatRef: chatRef{chat: testOwner}})
+
+	gateway.EmitTo(conv, humanAsking("go"))
+	settle(t, gateway, conv.ID)
+	fake.push(privateText(1, 10, testOwner, "go"))
+	fake.waitCalls(t, "sendMessage", 1)
+	settle(t, gateway, conv.ID)
+	if len(target.prompts) != 0 || target.turn == nil || target.turn.prompt != 0 {
+		t.Fatalf("a refused note is still bound: prompts %+v, turn %+v", target.prompts, target.turn)
+	}
+
+	ctrl.refusing.Store(false)
+	fake.push(privateText(2, 11, testOwner, "go"))
+	ctrl.waitFor(t, "the second message", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 1 })
+	reaction := decodeCall[reactionCall](t, fake.waitCalls(t, "setMessageReaction", 1)[0])
+	if reaction.MessageID != 11 || len(reaction.Reaction) != 1 || reaction.Reaction[0].Emoji != ackEmoji {
+		t.Fatalf("the accepted message did not bind: reaction %+v", reaction)
+	}
+}
+
+func TestARefusedMessageNeverGetsTheAckEmoji(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := &refusingControl{fakeControl: newFakeControl()}
+	ctrl.live("tg-42", "42")
+	ctrl.refusing.Store(true)
+	gateway := startGateway(t, fake, ctrl, nil)
+	conv := contracts.Conversation{Gateway: gatewayKind, ID: "42"}
+
+	gateway.EmitTo(conv, humanAsking("go"))
+	settle(t, gateway, conv.ID)
+	fake.push(privateText(1, 10, testOwner, "go"))
+	fake.waitCalls(t, "sendMessage", 1)
+	settle(t, gateway, conv.ID)
+	for _, call := range fake.callsTo("setMessageReaction") {
+		if reaction := decodeCall[reactionCall](t, call); len(reaction.Reaction) == 1 && reaction.Reaction[0].Emoji == ackEmoji {
+			t.Fatalf("a refused message got the ack emoji: %+v", reaction)
+		}
 	}
 }
 
