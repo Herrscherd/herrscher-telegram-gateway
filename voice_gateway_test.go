@@ -244,3 +244,37 @@ func TestClosingTheGatewayStopsEveryAgentPoller(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 }
+
+func TestAnAgentBotsOwnEchoOnItsOwnPollNeverReachesItsSession(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.live("tg-42-a-ana", "42@ana")
+	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "ana", voiceToken, contracts.ReplyOnMention)}
+	startGateway(t, fake, ctrl, map[string]string{allowAllSetting: "1"})
+	fake.waitVoicePoll(t)
+
+	echo := privateText(1, 10, voiceBotID, "my own echo")
+	echo.Message.Chat = tgctl.Chat{ID: testOwner, Type: chatTypePrivate}
+	fake.pushTo(voiceToken, echo)
+	fake.pushTo(voiceToken, privateText(2, 11, testOwner, "marker"))
+
+	ctrl.waitFor(t, "the marker", func(c *fakeControl) bool { return len(c.submitted["tg-42-a-ana"]) == 1 })
+	if got := ctrl.submitted["tg-42-a-ana"]; got[0].Text != "marker" {
+		t.Fatalf("an agent bot's own echo was routed: %+v", got)
+	}
+}
+
+func TestARejectedTokenChannelsAgentCapturesThroughTheHouse(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.repos = []contracts.RepoRef{{Name: "herrscher", Local: true}}
+	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "ghost", refusedToken, contracts.ReplyInChannels, "-100500")}
+	startGateway(t, fake, ctrl, map[string]string{chatsSetting: "-100500"})
+
+	fake.push(inGroup(1, 10, testOwner, "a plain message"))
+
+	ctrl.waitFor(t, "the created session", func(c *fakeControl) bool { return len(c.created) == 1 })
+	if got := ctrl.created[0]; got.Agent != "ghost" || got.ChannelID != "-100500@ghost" {
+		t.Fatalf("created = %+v", got)
+	}
+}

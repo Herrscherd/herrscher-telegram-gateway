@@ -1,9 +1,14 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -97,5 +102,56 @@ func TestCloseReturnsAtItsDeadlineWhileASignInIgnoresItsContext(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("close did not return while a sign-in hung")
+	}
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestASignInFailureNeverPutsTheTokenInTheLogs(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "ghost", refusedToken, contracts.ReplyOnMention)}
+	unreachable := httptest.NewServer(http.NotFoundHandler())
+	unreachable.Close()
+	var logs syncBuffer
+	cfg := contracts.PluginConfig{Settings: map[string]string{tokenSetting: testToken, ownerSetting: "42"}}
+	set, err := newGatewaySet(t.Context(), cfg, fake.server.URL, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err != nil {
+		t.Fatalf("build the gateway: %v", err)
+	}
+	gateway := set.Gateway.(*Gateway)
+	gateway.dial = func(token string) bot { return tgctl.New(token, tgctl.WithBaseURL(unreachable.URL)) }
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
+		defer cancel()
+		if err := gateway.Close(ctx); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	gateway.BindSessionControl(ctrl)
+
+	if !strings.Contains(logs.String(), "agent bot skipped") {
+		t.Fatalf("the failed sign-in was not logged: %q", logs.String())
+	}
+	for _, secret := range []string{refusedToken, "refused-token"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatalf("the log carries the token %q: %s", secret, logs.String())
+		}
 	}
 }
