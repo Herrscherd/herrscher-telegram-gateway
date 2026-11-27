@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"strings"
 	"testing"
 
 	contracts "github.com/Herrscherd/herrscher-contracts"
@@ -185,6 +186,55 @@ func TestAnExplicitHouseMentionIsAnsweredAlongsideAReadyChannelAgent(t *testing.
 	ctrl.waitFor(t, "bob captures the chat and the house answers its mention", func(c *fakeControl) bool {
 		return len(c.submitted["tg-n100500-a-bob"]) == 1 && len(c.submitted["tg-n100500"]) == 1
 	})
+}
+
+func TestAnExplicitHouseMentionAlsoAnswersANamedTokenlessAgentAsOnDiscord(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.live("tg-n100500", "-100500")
+	ctrl.live("tg-n100500-a-bob", "-100500@bob")
+	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "bob", "", contracts.ReplyOnMention)}
+	startGateway(t, fake, ctrl, map[string]string{chatsSetting: "-100500"})
+
+	house := "@" + testBotName
+	named := inGroup(1, 10, testOwner, house+" @bob what changed")
+	named.Message.Entities = []tgctl.Entity{
+		{Type: entityMention, Offset: 0, Length: len(house)},
+		{Type: entityMention, Offset: len(house) + 1, Length: len("@bob")},
+	}
+	fake.push(named)
+
+	ctrl.waitFor(t, "bob answers its mention and the house answers its own", func(c *fakeControl) bool {
+		return len(c.submitted["tg-n100500-a-bob"]) == 1 && len(c.submitted["tg-n100500"]) == 1
+	})
+}
+
+func TestAFileRefusedAcrossSeveralTargetsIsExplainedOnce(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.live("tg-n100500", "-100500")
+	ctrl.live("tg-n100500-a-bob", "-100500@bob")
+	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "bob", "", contracts.ReplyInChannels, "-100500")}
+	startGateway(t, fake, ctrl, map[string]string{chatsSetting: "-100500"})
+
+	mention := "@" + testBotName
+	addressed := inGroup(1, 10, testOwner, mention+" see the file")
+	addressed.Message.Entities = []tgctl.Entity{{Type: entityMention, Offset: 0, Length: len(mention)}}
+	addressed.Message.Document = &tgctl.Document{FileID: "big", FileName: "big.txt", FileSize: attachmentMaxBytes + 1}
+	fake.push(addressed)
+
+	ctrl.waitFor(t, "bob and the house both receive the message", func(c *fakeControl) bool {
+		return len(c.submitted["tg-n100500-a-bob"]) == 1 && len(c.submitted["tg-n100500"]) == 1
+	})
+	refusals := 0
+	for _, call := range fake.callsTo("sendMessage") {
+		if strings.Contains(decodeCall[tgctl.OutgoingMessage](t, call).Text, "not accepted") {
+			refusals++
+		}
+	}
+	if refusals != 1 {
+		t.Fatalf("the refused file was explained %d times, want once", refusals)
+	}
 }
 
 func TestAHouseDropsAMessageThatMentionsOnlyAnAgentBot(t *testing.T) {
