@@ -283,7 +283,7 @@ func (g *Gateway) sinkFor(conv address) *sink {
 	key := conv.String()
 	found, ok := g.sinks[key]
 	if !ok {
-		found = &sink{conv: conv, voices: g.voices, drafts: &g.drafts, msgs: g.msgs, log: g.log, now: g.now}
+		found = &sink{conv: conv, voices: g.voices, drafts: &g.drafts, msgs: g.msgs, log: g.log, now: g.now, awaitingAck: make(map[uint64]ackOutcome)}
 		g.sinks[key] = found
 	}
 	return found

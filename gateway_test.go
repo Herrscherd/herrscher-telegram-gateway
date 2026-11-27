@@ -398,9 +398,52 @@ func TestTheAckArrivesWhenTheTurnEndsBeforeTheAcceptedJobRuns(t *testing.T) {
 	}
 
 	fake.push(privateText(1, 10, testOwner, "go"))
-	reaction := decodeCall[reactionCall](t, fake.waitCalls(t, "setMessageReaction", 1)[0])
-	if len(reaction.Reaction) != 1 || reaction.Reaction[0].Emoji != ackEmoji || reaction.MessageID != 10 {
-		t.Fatalf("the ack went %+v, want %s on message 10", reaction, ackEmoji)
+	calls := fake.waitCalls(t, "setMessageReaction", 2)
+	ack := decodeCall[reactionCall](t, calls[0])
+	if len(ack.Reaction) != 1 || ack.Reaction[0].Emoji != ackEmoji || ack.MessageID != 10 {
+		t.Fatalf("the ack went %+v, want %s on message 10", ack, ackEmoji)
+	}
+	swap := decodeCall[reactionCall](t, calls[1])
+	if len(swap.Reaction) != 0 || swap.MessageID != 10 {
+		t.Fatalf("the ack was not cleared after the turn ended: %+v", swap)
+	}
+}
+
+func TestTheFailureEmojiReplacesTheAckWhenTheTurnFailsBeforeTheAcceptedJobRuns(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := &emittingControl{fakeControl: newFakeControl()}
+	ctrl.live("tg-42", "42")
+	gateway := startGateway(t, fake, ctrl, nil)
+	conv := contracts.Conversation{Gateway: gatewayKind, ID: "42"}
+	ctrl.during = func() {
+		gateway.EmitTo(conv, humanAsking("go"))
+		gateway.EmitTo(conv, contracts.Event{T: eventReply, Done: true, Text: "done", Outcome: contracts.TurnFailed})
+	}
+
+	fake.push(privateText(1, 10, testOwner, "go"))
+	calls := fake.waitCalls(t, "setMessageReaction", 2)
+	swap := decodeCall[reactionCall](t, calls[1])
+	if len(swap.Reaction) != 1 || swap.Reaction[0].Emoji != failedEmoji || swap.MessageID != 10 {
+		t.Fatalf("the outcome after the ack went %+v, want %s on message 10", swap, failedEmoji)
+	}
+}
+
+func TestTheAckIsClearedWhenTheTurnIsAbandonedBeforeTheAcceptedJobRuns(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := &emittingControl{fakeControl: newFakeControl()}
+	ctrl.live("tg-42", "42")
+	gateway := startGateway(t, fake, ctrl, nil)
+	conv := contracts.Conversation{Gateway: gatewayKind, ID: "42"}
+	ctrl.during = func() {
+		gateway.EmitTo(conv, humanAsking("go"))
+		gateway.EmitTo(conv, contracts.Event{T: eventAbandoned})
+	}
+
+	fake.push(privateText(1, 10, testOwner, "go"))
+	calls := fake.waitCalls(t, "setMessageReaction", 2)
+	swap := decodeCall[reactionCall](t, calls[1])
+	if len(swap.Reaction) != 0 || swap.MessageID != 10 {
+		t.Fatalf("the ack after an abandoned turn was not cleared: %+v", swap)
 	}
 }
 

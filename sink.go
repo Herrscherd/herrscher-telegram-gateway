@@ -54,16 +54,22 @@ type turnView struct {
 	nextFlush  time.Time
 }
 
+type ackOutcome struct {
+	ended bool
+	emoji string
+}
+
 type sink struct {
-	conv    address
-	voices  *voiceBots
-	drafts  *atomic.Int64
-	msgs    messages
-	log     *slog.Logger
-	now     func() time.Time
-	prompts []notedPrompt
-	acked   int64
-	turn    *turnView
+	conv        address
+	voices      *voiceBots
+	drafts      *atomic.Int64
+	msgs        messages
+	log         *slog.Logger
+	now         func() time.Time
+	prompts     []notedPrompt
+	acked       int64
+	turn        *turnView
+	awaitingAck map[uint64]ackOutcome
 }
 
 func (s *sink) speaker() speaker { return s.voices.speakerAt(s.conv) }
@@ -89,6 +95,7 @@ func (s *sink) apply(ctx context.Context, event contracts.Event) {
 }
 
 func (s *sink) noteUser(noted notedPrompt) {
+	s.awaitingAck[noted.note] = ackOutcome{}
 	if s.turn != nil && s.turn.prompt == 0 && noted.asks(s.turn.asked.author, s.turn.asked.text) {
 		s.turn.prompt, s.turn.promptNote = noted.id, noted.note
 		return
@@ -100,7 +107,15 @@ func (s *sink) noteUser(noted notedPrompt) {
 }
 
 func (s *sink) accepted(ctx context.Context, noted notedPrompt) {
+	outcome, waiting := s.awaitingAck[noted.note]
+	delete(s.awaitingAck, noted.note)
 	posted := s.ack(ctx, noted.id)
+	if waiting && outcome.ended {
+		if posted {
+			s.react(ctx, noted.id, outcome.emoji)
+		}
+		return
+	}
 	if s.turn != nil && s.turn.promptNote == noted.note {
 		if posted {
 			s.acked = noted.id
@@ -116,6 +131,7 @@ func (s *sink) accepted(ctx context.Context, noted notedPrompt) {
 }
 
 func (s *sink) forgetUser(noted notedPrompt) {
+	delete(s.awaitingAck, noted.note)
 	if s.turn != nil && s.turn.promptNote == noted.note {
 		s.turn.prompt, s.turn.promptNote = 0, 0
 	}
@@ -167,10 +183,24 @@ func (s *sink) swapAck(ctx context.Context, emoji string) {
 	if s.acked == 0 {
 		return
 	}
-	if err := s.speaker().api.SetMessageReaction(ctx, s.conv.chat, s.acked, emoji); err != nil {
+	s.react(ctx, s.acked, emoji)
+	s.acked = 0
+}
+
+func (s *sink) react(ctx context.Context, messageID int64, emoji string) {
+	if err := s.speaker().api.SetMessageReaction(ctx, s.conv.chat, messageID, emoji); err != nil {
 		s.log.Warn("outcome reaction failed", "err", err)
 	}
-	s.acked = 0
+}
+
+func (s *sink) endTurn(ctx context.Context, emoji string) {
+	if s.turn != nil {
+		if _, waiting := s.awaitingAck[s.turn.promptNote]; waiting {
+			s.awaitingAck[s.turn.promptNote] = ackOutcome{ended: true, emoji: emoji}
+		}
+	}
+	s.swapAck(ctx, emoji)
+	s.turn = nil
 }
 
 func (s *sink) chunk(ctx context.Context, text string) {
@@ -236,8 +266,7 @@ func (s *sink) abandon(ctx context.Context) {
 			s.log.Warn("abandoned render failed", "err", err)
 		}
 	}
-	s.swapAck(ctx, "")
-	s.turn = nil
+	s.endTurn(ctx, "")
 }
 
 func (s *sink) finish(ctx context.Context, event contracts.Event) {
@@ -261,8 +290,7 @@ func (s *sink) finish(ctx context.Context, event contracts.Event) {
 	if event.Outcome == contracts.TurnFailed {
 		emoji = failedEmoji
 	}
-	s.swapAck(ctx, emoji)
-	s.turn = nil
+	s.endTurn(ctx, emoji)
 }
 
 func (s *sink) answer(event contracts.Event) formatted {
