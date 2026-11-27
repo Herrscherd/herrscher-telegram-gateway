@@ -79,7 +79,7 @@ func TestARefusedNoteIsWithdrawnAndALaterMessageStillBinds(t *testing.T) {
 	fake.push(privateText(1, 10, testOwner, "go"))
 	fake.waitCalls(t, "sendMessage", 1)
 	settle(t, gateway, conv.ID)
-	if len(target.prompts) != 0 || target.turn == nil || target.turn.prompt != 0 {
+	if len(target.prompts) != 0 || target.turn == nil || target.turn.prompt.id != 0 {
 		t.Fatalf("a refused note is still bound: prompts %+v, turn %+v", target.prompts, target.turn)
 	}
 

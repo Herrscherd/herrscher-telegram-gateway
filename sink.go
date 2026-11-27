@@ -44,14 +44,13 @@ func (n notedPrompt) asks(author, text string) bool {
 }
 
 type turnView struct {
-	text       string
-	draftID    int64
-	asked      notedPrompt
-	prompt     int64
-	promptNote uint64
-	live       int64
-	shown      string
-	nextFlush  time.Time
+	text      string
+	draftID   int64
+	asked     notedPrompt
+	prompt    notedPrompt
+	live      int64
+	shown     string
+	nextFlush time.Time
 }
 
 type ackOutcome struct {
@@ -66,8 +65,8 @@ type sink struct {
 	msgs        messages
 	log         *slog.Logger
 	now         func() time.Time
+	acks        *ackRegistry
 	prompts     []notedPrompt
-	acked       int64
 	turn        *turnView
 	awaitingAck map[uint64]ackOutcome
 }
@@ -96,8 +95,8 @@ func (s *sink) apply(ctx context.Context, event contracts.Event) {
 
 func (s *sink) noteUser(ctx context.Context, noted notedPrompt) {
 	s.awaitingAck[noted.note] = ackOutcome{}
-	if s.turn != nil && s.turn.prompt == 0 && noted.asks(s.turn.asked.author, s.turn.asked.text) {
-		s.turn.prompt, s.turn.promptNote = noted.id, noted.note
+	if s.turn != nil && s.turn.prompt.note == 0 && noted.asks(s.turn.asked.author, s.turn.asked.text) {
+		s.turn.prompt = noted
 		return
 	}
 	if len(s.prompts) == laneDepth {
@@ -110,22 +109,19 @@ func (s *sink) noteUser(ctx context.Context, noted notedPrompt) {
 func (s *sink) accepted(ctx context.Context, noted notedPrompt) {
 	outcome, waiting := s.awaitingAck[noted.note]
 	delete(s.awaitingAck, noted.note)
-	posted := s.ack(ctx, noted.id)
-	if waiting && outcome.ended {
-		if posted {
-			s.react(ctx, noted.id, outcome.emoji)
-		}
+	if s.turn != nil && s.turn.prompt.note == noted.note {
+		s.hold(ctx, &s.turn.prompt)
 		return
 	}
-	if s.turn != nil && s.turn.promptNote == noted.note {
-		if posted {
-			s.acked = noted.id
-		}
+	if waiting && outcome.ended {
+		ended := noted
+		s.hold(ctx, &ended)
+		s.release(ctx, &ended, outcome.emoji)
 		return
 	}
 	for index := range s.prompts {
 		if s.prompts[index].note == noted.note {
-			s.prompts[index].accepted = posted
+			s.hold(ctx, &s.prompts[index])
 			return
 		}
 	}
@@ -133,8 +129,8 @@ func (s *sink) accepted(ctx context.Context, noted notedPrompt) {
 
 func (s *sink) forgetUser(noted notedPrompt) {
 	delete(s.awaitingAck, noted.note)
-	if s.turn != nil && s.turn.promptNote == noted.note {
-		s.turn.prompt, s.turn.promptNote = 0, 0
+	if s.turn != nil && s.turn.prompt.note == noted.note {
+		s.turn.prompt = notedPrompt{}
 	}
 	s.prompts = slices.DeleteFunc(s.prompts, func(kept notedPrompt) bool { return kept.note == noted.note })
 }
@@ -173,53 +169,46 @@ func (s *sink) endAck(ctx context.Context, noted *notedPrompt, emoji string) {
 		s.awaitingAck[noted.note] = ackOutcome{ended: true, emoji: emoji}
 		return
 	}
+	s.release(ctx, noted, emoji)
+}
+
+func (s *sink) hold(ctx context.Context, noted *notedPrompt) {
 	if noted.accepted {
-		noted.accepted = false
-		s.react(ctx, noted.id, emoji)
+		return
 	}
+	noted.accepted = true
+	s.acks.open(ctx, s.keyOf(noted.id), s.speaker().api)
+}
+
+func (s *sink) release(ctx context.Context, noted *notedPrompt, emoji string) {
+	if !noted.accepted {
+		return
+	}
+	noted.accepted = false
+	s.acks.close(ctx, s.keyOf(noted.id), emoji)
+}
+
+func (s *sink) keyOf(messageID int64) ackKey {
+	return ackKey{chat: s.conv.chat, message: messageID}
 }
 
 func (s *sink) begin(ctx context.Context, author, text string) {
-	claimed, _ := s.claim(ctx, author, text)
-	s.turn = &turnView{draftID: s.drafts.Add(1), asked: notedPrompt{author: author, text: text}, prompt: claimed.id, promptNote: claimed.note}
-	if claimed.accepted {
-		s.acked = claimed.id
+	claimed, found := s.claim(ctx, author, text)
+	s.turn = &turnView{draftID: s.drafts.Add(1), asked: notedPrompt{author: author, text: text}}
+	if !found {
+		return
 	}
-}
-
-func (s *sink) ack(ctx context.Context, messageID int64) bool {
-	if err := s.speaker().api.SetMessageReaction(ctx, s.conv.chat, messageID, ackEmoji); err != nil {
-		s.log.Warn("ack reaction failed", "err", err)
-		return false
-	}
-	return true
+	s.turn.prompt = claimed
 }
 
 func (s *sink) stoppedDraft(draftID int64) bool {
 	return s.turn != nil && s.conv.private() && s.turn.draftID == draftID
 }
 
-func (s *sink) swapAck(ctx context.Context, emoji string) {
-	if s.acked == 0 {
-		return
-	}
-	s.react(ctx, s.acked, emoji)
-	s.acked = 0
-}
-
-func (s *sink) react(ctx context.Context, messageID int64, emoji string) {
-	if err := s.speaker().api.SetMessageReaction(ctx, s.conv.chat, messageID, emoji); err != nil {
-		s.log.Warn("outcome reaction failed", "err", err)
-	}
-}
-
 func (s *sink) endTurn(ctx context.Context, emoji string) {
 	if s.turn != nil {
-		if _, waiting := s.awaitingAck[s.turn.promptNote]; waiting {
-			s.awaitingAck[s.turn.promptNote] = ackOutcome{ended: true, emoji: emoji}
-		}
+		s.endAck(ctx, &s.turn.prompt, emoji)
 	}
-	s.swapAck(ctx, emoji)
 	s.turn = nil
 }
 
@@ -302,7 +291,7 @@ func (s *sink) finish(ctx context.Context, event contracts.Event) {
 		}
 		replyTo := int64(noReplyToNobody)
 		if index == 0 {
-			replyTo = shown.prompt
+			replyTo = shown.prompt.id
 		}
 		s.send(ctx, s.outgoing(part, replyTo))
 	}

@@ -64,6 +64,7 @@ type Gateway struct {
 	mu      sync.Mutex
 	ctrl    contracts.SessionControl
 	sinks   map[string]*sink
+	acks    *ackRegistry
 	drafts  atomic.Int64
 	polling bool
 	closed  bool
@@ -78,7 +79,7 @@ func newGateway(ctx context.Context, api bot, set settings, self tgctl.User, msg
 	gateway := &Gateway{
 		api: api, self: self, voices: voices, dial: dial, msgs: msgs, log: log,
 		menus: newMenuTable(), lanes: newLanes(), life: life, cancel: cancel, now: time.Now, album: albumWindow, signInWait: voiceSignInWait,
-		sinks: make(map[string]*sink),
+		sinks: make(map[string]*sink), acks: newAckRegistry(log),
 	}
 	gateway.drafts.Store(gateway.now().UnixMilli())
 	gateway.router = &router{
@@ -275,7 +276,7 @@ func (g *Gateway) sinkFor(conv address) *sink {
 	key := conv.String()
 	found, ok := g.sinks[key]
 	if !ok {
-		found = &sink{conv: conv, voices: g.voices, drafts: &g.drafts, msgs: g.msgs, log: g.log, now: g.now, awaitingAck: make(map[uint64]ackOutcome)}
+		found = &sink{conv: conv, voices: g.voices, drafts: &g.drafts, msgs: g.msgs, log: g.log, now: g.now, acks: g.acks, awaitingAck: make(map[uint64]ackOutcome)}
 		g.sinks[key] = found
 	}
 	return found
