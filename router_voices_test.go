@@ -78,3 +78,36 @@ func TestAnExplicitMentionOfTheChannelsAgentItselfIsStillRouted(t *testing.T) {
 		t.Fatalf("route = %+v addressed=%v", conv, addressed)
 	}
 }
+
+func houseRouter() (*router, origin) {
+	bots := newVoiceBots(nil, tgctl.User{ID: testBotID, Username: testBotName})
+	return &router{voices: bots}, origin{self: tgctl.User{ID: testBotID, Username: testBotName}}
+}
+
+func replyToHouse(text string) tgctl.Message {
+	msg := groupText(text)
+	msg.ReplyTo = &tgctl.Message{MessageID: 5, From: &tgctl.User{ID: testBotID, IsBot: true}}
+	return msg
+}
+
+func TestAReplyToTheHouseIsCapturedByAReadyTokenlessChannelsAgentAsOnDiscord(t *testing.T) {
+	voices := []contracts.AgentVoice{voiceOf(t, "bob", "", contracts.ReplyInChannels, "-100500")}
+	router, house := houseRouter()
+	msg := replyToHouse("a reply to the house")
+
+	conv, _, addressed := router.route(house, &msg, voices)
+	if !addressed || conv.agent != "bob" {
+		t.Fatalf("route = %+v addressed=%v, want the channels agent bob to capture the reply", conv, addressed)
+	}
+}
+
+func TestAReplyToATokenlessVoicesHeaderGoesToTheHouseAsOnDiscord(t *testing.T) {
+	voices := []contracts.AgentVoice{voiceOf(t, "bob", "", contracts.ReplyOnMention)}
+	router, house := houseRouter()
+	msg := replyToHouse("and the details?")
+
+	conv, text, addressed := router.route(house, &msg, voices)
+	if !addressed || conv.agent != "" || text != "and the details?" {
+		t.Fatalf("route = %+v %q addressed=%v, want the house to answer a reply to bob's header", conv, text, addressed)
+	}
+}
