@@ -5,7 +5,7 @@ go 1.27.0
 toolchain go1.27.4
 
 require (
-	github.com/Herrscherd/herrscher-contracts v0.46.0
+	github.com/Herrscherd/herrscher-contracts v0.50.0
 	github.com/Herrscherd/tgctl v0.1.0
 )
 

@@ -24,6 +24,7 @@ type choice struct {
 
 type menu struct {
 	conv   string
+	target string
 	values []string
 	labels []string
 }
@@ -38,11 +39,11 @@ func newMenuTable() *menuTable {
 	return &menuTable{menus: make(map[string]menu)}
 }
 
-func (t *menuTable) put(conv string, values, labels []string) string {
+func (t *menuTable) put(conv, target string, values, labels []string) string {
 	token := newMenuToken()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.menus[token] = menu{conv: conv, values: values, labels: labels}
+	t.menus[token] = menu{conv: conv, target: target, values: values, labels: labels}
 	t.order = append(t.order, token)
 	for len(t.order) > menuCapacity {
 		delete(t.menus, t.order[0])
@@ -51,15 +52,25 @@ func (t *menuTable) put(conv string, values, labels []string) string {
 	return token
 }
 
-func (t *menuTable) take(token, conv string, index int) (choice, bool) {
+func (t *menuTable) lookup(token, conv string, index int) (choice, string, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	found, ok := t.menus[token]
 	if !ok || found.conv != conv || index < 0 || index >= len(found.values) {
-		return choice{}, false
+		return choice{}, "", false
+	}
+	return choice{value: found.values[index], label: found.labels[index]}, found.target, true
+}
+
+func (t *menuTable) take(token, conv string, index int) (choice, string, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	found, ok := t.menus[token]
+	if !ok || found.conv != conv || index < 0 || index >= len(found.values) {
+		return choice{}, "", false
 	}
 	delete(t.menus, token)
-	return choice{value: found.values[index], label: found.labels[index]}, true
+	return choice{value: found.values[index], label: found.labels[index]}, found.target, true
 }
 
 func newMenuToken() string { return rand.Text() }

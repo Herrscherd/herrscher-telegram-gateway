@@ -258,3 +258,19 @@ func (m formatted) tail(limit int) formatted {
 	}
 	return parts[len(parts)-1]
 }
+
+func (m formatted) units() int { return unitsOf(m.text) }
+
+func (m formatted) prepend(head formatted) formatted {
+	if head.text == "" {
+		return m
+	}
+	offset := head.units()
+	entities := make([]tgctl.Entity, 0, len(head.entities)+len(m.entities))
+	entities = append(entities, head.entities...)
+	for _, candidate := range m.entities {
+		candidate.Offset += offset
+		entities = append(entities, candidate)
+	}
+	return formatted{text: head.text + m.text, entities: entities}
+}

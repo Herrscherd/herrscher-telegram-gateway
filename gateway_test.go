@@ -86,8 +86,10 @@ func TestARefusedMessageCostsNothingAndReachesNoSession(t *testing.T) {
 	if len(ctrl.submitted["tg-n100600"]) != 0 || ctrl.repoCalls != 0 || len(ctrl.created) != 0 {
 		t.Fatalf("a refused message did work: repos %d, created %v", ctrl.repoCalls, ctrl.created)
 	}
-	if keys := laneKeys(gateway); !slices.Equal(keys, []string{"in/-100500", "out/-100500"}) {
-		t.Fatalf("lanes = %v, a refused message was queued", keys)
+	for _, key := range laneKeys(gateway) {
+		if key != inboundLane+"-100500" && key != outboundLane+"-100500" {
+			t.Fatalf("lane %q was queued for a refused message", key)
+		}
 	}
 	if sent := fake.callsTo("sendMessage"); len(sent) != 0 {
 		t.Fatalf("a refused message was answered: %d messages", len(sent))
@@ -212,7 +214,9 @@ func TestStopInterruptsOnlyTheTurnStillRunning(t *testing.T) {
 	}
 
 	gateway.EmitTo(conv, contracts.Event{T: eventHuman})
-	fake.push(stop(1, testOwner, 5), stop(2, 7, 1), stop(3, testOwner, 1))
+	gateway.EmitTo(conv, contracts.Event{T: eventChunk, Text: "working"})
+	drafted := decodeCall[tgctl.MessageDraft](t, fake.waitCalls(t, "sendMessageDraft", 1)[0])
+	fake.push(stop(1, testOwner, drafted.DraftID-1), stop(2, 7, drafted.DraftID), stop(3, testOwner, drafted.DraftID))
 	ctrl.waitFor(t, "the interrupt", func(c *fakeControl) bool { return len(c.interrupted) > 0 })
 	fake.push(privateText(4, 10, testOwner, "/stop@"+testBotName))
 	if got := decodeCall[tgctl.OutgoingMessage](t, fake.waitCalls(t, "sendMessage", 1)[0]).Text; got != "Stopping the turn." {
@@ -288,6 +292,7 @@ func TestAPrivateTurnStreamsADraftThenRepliesWithEntities(t *testing.T) {
 	settle(t, gateway, conv.ID)
 	fake.push(privateText(1, 10, testOwner, "go"))
 	ctrl.waitFor(t, "the message", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 1 })
+	fake.waitCalls(t, "setMessageReaction", 1)
 	gateway.EmitTo(conv, contracts.Event{T: eventChunk, Text: "working on **it**"})
 	gateway.EmitTo(conv, contracts.Event{T: eventReply, Done: true, Text: "Done with **it**"})
 

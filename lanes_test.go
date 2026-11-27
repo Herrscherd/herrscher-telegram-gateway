@@ -33,22 +33,22 @@ func TestAnIdleLaneRetiresItsWorker(t *testing.T) {
 	}
 }
 
-func TestALaneWithASenderWaitingDoesNotRetire(t *testing.T) {
+func TestALaneWithAQueuedJobDoesNotRetireBeforeItRunsIt(t *testing.T) {
 	queues := newLanes()
 	queues.idle = time.Millisecond
-	target, open := queues.acquire(t.Context(), "conv")
-	if !open {
-		t.Fatal("acquire refused")
-	}
-	idle := time.NewTimer(20 * queues.idle)
-	<-idle.C
+	release := make(chan struct{})
 	ran := make(chan struct{})
-	target.jobs <- func(context.Context) { close(ran) }
-	queues.release(target)
+	if !queues.push(t.Context(), "conv", func(context.Context) { <-release }) {
+		t.Fatal("push refused")
+	}
+	if !queues.push(t.Context(), "conv", func(context.Context) { close(ran) }) {
+		t.Fatal("push refused")
+	}
+	close(release)
 
 	select {
 	case <-ran:
 	case <-time.After(waitLimit):
-		t.Fatal("the job sent by a waiting sender never ran")
+		t.Fatal("the job queued behind a running job never ran")
 	}
 }

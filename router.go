@@ -6,8 +6,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
-	"unicode/utf16"
 
 	contracts "github.com/Herrscherd/herrscher-contracts"
 	"github.com/Herrscherd/tgctl"
@@ -43,38 +43,40 @@ type pendingBind struct {
 }
 
 type router struct {
-	api      bot
-	set      settings
-	self     tgctl.User
-	msgs     messages
-	log      *slog.Logger
-	menus    *menuTable
-	files    stager
-	ctrl     func() contracts.SessionControl
-	noteUser func(ctx context.Context, conv chatRef, noted notedPrompt)
-	later    func(ctx context.Context, conv chatRef, next job) bool
+	set        settings
+	msgs       messages
+	log        *slog.Logger
+	menus      *menuTable
+	voices     *voiceBots
+	files      stager
+	ctrl       func() contracts.SessionControl
+	noteUser   func(ctx context.Context, conv address, noted notedPrompt)
+	accepted   func(ctx context.Context, conv address, noted notedPrompt)
+	forgetUser func(ctx context.Context, conv address, noted notedPrompt)
+	later      func(ctx context.Context, conv address, next job) bool
 
+	notes   atomic.Uint64
 	mu      sync.Mutex
 	pending map[string]pendingBind
 	albums  map[string]*heldAlbum
 	holds   int
 }
 
-func (r *router) onUpdate(ctx context.Context, next tgctl.Update) {
+func (r *router) onUpdate(ctx context.Context, from origin, next tgctl.Update) {
 	switch {
 	case next.Message != nil:
-		r.onMessage(ctx, next.Message)
+		r.onMessage(ctx, from, next.Message)
 	case next.CallbackQuery != nil:
-		r.onCallback(ctx, next.CallbackQuery)
+		r.onCallback(ctx, from, next.CallbackQuery)
 	}
 }
 
-func (r *router) accepts(next tgctl.Update) bool {
+func (r *router) accepts(from origin, next tgctl.Update) bool {
 	switch {
 	case next.Message != nil:
-		return r.set.admits(next.Message)
+		return !r.voices.authoredByOwn(next.Message) && r.set.admits(next.Message)
 	case next.CallbackQuery != nil:
-		return next.CallbackQuery.Message != nil
+		return from.house() && next.CallbackQuery.Message != nil
 	case next.StoppedMessageGeneration != nil:
 		stopped := next.StoppedMessageGeneration
 		return stopped.Chat.Type == chatTypePrivate && r.set.authorizes(stopped.Chat.ID)
@@ -96,10 +98,12 @@ type heldAlbum struct {
 	gen     int
 }
 
-func (r *router) onMessage(ctx context.Context, msg *tgctl.Message) {
-	conv := conversationOf(msg).String()
+func albumKey(from origin, conv chatRef) string { return from.agent + "|" + conv.String() }
+
+func (r *router) onMessage(ctx context.Context, from origin, msg *tgctl.Message) {
+	key := albumKey(from, conversationOf(msg))
 	r.mu.Lock()
-	held, holding := r.albums[conv]
+	held, holding := r.albums[key]
 	switch {
 	case holding && msg.MediaGroupID == held.group:
 		if len(held.members) < albumMaxItems {
@@ -109,9 +113,9 @@ func (r *router) onMessage(ctx context.Context, msg *tgctl.Message) {
 		held.gen = r.holds
 		gen := held.gen
 		r.mu.Unlock()
-		r.scheduleFlush(ctx, msg, gen)
+		r.scheduleFlush(ctx, from, msg, key, gen)
 		return
-	case holding && !r.isStop(msg):
+	case holding && !r.isStop(from, msg):
 		kept := len(held.after) < laneDepth
 		if kept {
 			held.after = append(held.after, msg)
@@ -124,34 +128,34 @@ func (r *router) onMessage(ctx context.Context, msg *tgctl.Message) {
 	case !holding && msg.MediaGroupID != "":
 		r.holds++
 		gen := r.holds
-		r.albums[conv] = &heldAlbum{group: msg.MediaGroupID, members: []*tgctl.Message{msg}, gen: gen}
+		r.albums[key] = &heldAlbum{group: msg.MediaGroupID, members: []*tgctl.Message{msg}, gen: gen}
 		r.mu.Unlock()
-		r.scheduleFlush(ctx, msg, gen)
+		r.scheduleFlush(ctx, from, msg, key, gen)
 		return
 	}
 	r.mu.Unlock()
-	r.handle(ctx, msg, []*tgctl.Message{msg})
+	r.handle(ctx, from, msg, []*tgctl.Message{msg})
 }
 
-func (r *router) isStop(msg *tgctl.Message) bool {
-	return strings.EqualFold(stripCommandMention(strings.TrimSpace(msg.Text), r.self.Username), stopCommand)
+func (r *router) isStop(from origin, msg *tgctl.Message) bool {
+	return strings.EqualFold(stripCommandMention(strings.TrimSpace(msg.Text), from.self.Username), stopCommand)
 }
 
-func (r *router) scheduleFlush(ctx context.Context, msg *tgctl.Message, gen int) {
-	conv := conversationOf(msg)
-	if !r.later(ctx, conv, func(ctx context.Context) { r.flushAlbum(ctx, conv.String(), gen) }) {
-		r.flushAlbum(ctx, conv.String(), gen)
+func (r *router) scheduleFlush(ctx context.Context, from origin, msg *tgctl.Message, key string, gen int) {
+	conv := address{chatRef: conversationOf(msg)}
+	if !r.later(ctx, conv, func(ctx context.Context) { r.flushAlbum(ctx, from, key, gen) }) {
+		r.flushAlbum(ctx, from, key, gen)
 	}
 }
 
-func (r *router) flushAlbum(ctx context.Context, conv string, gen int) {
+func (r *router) flushAlbum(ctx context.Context, from origin, key string, gen int) {
 	r.mu.Lock()
-	held, holding := r.albums[conv]
+	held, holding := r.albums[key]
 	if !holding || held.gen != gen {
 		r.mu.Unlock()
 		return
 	}
-	delete(r.albums, conv)
+	delete(r.albums, key)
 	r.mu.Unlock()
 	lead := held.members[0]
 	for _, member := range held.members {
@@ -160,9 +164,9 @@ func (r *router) flushAlbum(ctx context.Context, conv string, gen int) {
 			break
 		}
 	}
-	r.handle(ctx, lead, held.members)
+	r.handle(ctx, from, lead, held.members)
 	for _, next := range held.after {
-		r.onMessage(ctx, next)
+		r.onMessage(ctx, from, next)
 	}
 }
 
@@ -176,29 +180,29 @@ func (r *router) heldMessages() int {
 	return count
 }
 
-func (r *router) handle(ctx context.Context, msg *tgctl.Message, members []*tgctl.Message) {
-	text, addressed := r.addressed(msg)
-	if !addressed {
-		return
-	}
-	conv := conversationOf(msg)
+func (r *router) handle(ctx context.Context, from origin, msg *tgctl.Message, members []*tgctl.Message) {
 	ctrl := r.ctrl()
+	targets := r.route(from, msg, voicesOf(ctrl))
 	if ctrl == nil {
-		r.post(ctx, conv, r.msgs.say(notReadyKey, nil))
-		return
-	}
-	if strings.EqualFold(text, stopCommand) {
-		r.stop(ctx, ctrl, conv)
+		for _, target := range targets {
+			r.post(ctx, target.conv, r.msgs.say(notReadyKey, nil))
+		}
 		return
 	}
 	var attachments []contracts.Attachment
-	offered := 0
-	for _, member := range members {
-		attachments = append(attachments, r.files.stage(ctx, conv, member)...)
-		offered += len(filesOf(member))
+	if slices.ContainsFunc(targets, forwarded) {
+		attachments = r.stageOnce(ctx, from, msg, members)
 	}
-	if len(attachments) < offered {
-		r.post(ctx, conv, r.msgs.say(fileRefusedKey, nil))
+	for _, target := range targets {
+		r.answer(ctx, ctrl, msg, target, attachments)
+	}
+}
+
+func (r *router) answer(ctx context.Context, ctrl contracts.SessionControl, msg *tgctl.Message, target addressee, attachments []contracts.Attachment) {
+	conv, text := target.conv, target.text
+	if strings.EqualFold(text, stopCommand) {
+		r.stop(ctx, ctrl, conv)
+		return
 	}
 	if text == "" && len(attachments) == 0 {
 		return
@@ -217,7 +221,41 @@ func (r *router) handle(ctx context.Context, msg *tgctl.Message, members []*tgct
 	r.askRepo(ctx, ctrl, conv, msg.From.ID, inbound)
 }
 
-func (r *router) deliver(ctx context.Context, ctrl contracts.SessionControl, conv chatRef, inbound contracts.Inbound) bool {
+func reachesVoice(voice contracts.AgentVoice, raw string, base chatRef) bool {
+	if namesMentioned(raw, voice.Agent) {
+		return true
+	}
+	return voice.Reply == contracts.ReplyInChannels && channelHas(voice.Channels, base)
+}
+
+func voicesOf(ctrl contracts.SessionControl) []contracts.AgentVoice {
+	if ctrl == nil {
+		return nil
+	}
+	return directoryVoices(ctrl)
+}
+
+type addressee struct {
+	conv address
+	text string
+}
+
+func (r *router) route(from origin, msg *tgctl.Message, voices []contracts.AgentVoice) []addressee {
+	base := conversationOf(msg)
+	if !from.house() {
+		return r.routeOwnVoice(from, msg, base, voices)
+	}
+	return r.routeHouse(from, msg, base, voices)
+}
+
+func displayName(from *tgctl.User) string {
+	if from.Username != "" {
+		return from.Username
+	}
+	return from.FirstName
+}
+
+func (r *router) deliver(ctx context.Context, ctrl contracts.SessionControl, conv address, inbound contracts.Inbound) bool {
 	session, archived := sessionOf(ctrl, conv)
 	if session == "" {
 		return false
@@ -228,16 +266,21 @@ func (r *router) deliver(ctx context.Context, ctrl contracts.SessionControl, con
 			return false
 		}
 	}
-	if !ctrl.Submit(session, inbound) {
-		return false
+	messageID, idErr := parseMessageID(string(inbound.MessageID))
+	if idErr != nil {
+		return ctrl.Submit(session, inbound)
 	}
-	if messageID, err := parseMessageID(string(inbound.MessageID)); err == nil {
-		r.noteUser(ctx, conv, notedPrompt{id: messageID, author: inbound.Author, text: inbound.Text})
+	prompt := notedPrompt{id: messageID, author: inbound.Author, text: inbound.Text, note: r.notes.Add(1)}
+	r.noteUser(ctx, conv, prompt)
+	if ctrl.Submit(session, inbound) {
+		r.accepted(ctx, conv, prompt)
+		return true
 	}
-	return true
+	r.forgetUser(ctx, conv, prompt)
+	return false
 }
 
-func sessionOf(ctrl contracts.SessionControl, conv chatRef) (string, bool) {
+func sessionOf(ctrl contracts.SessionControl, conv address) (string, bool) {
 	wanted := conv.String()
 	items := ctrl.Sessions()
 	for index := range items {
@@ -249,77 +292,7 @@ func sessionOf(ctrl contracts.SessionControl, conv chatRef) (string, bool) {
 	return "", false
 }
 
-func displayName(from *tgctl.User) string {
-	if from.Username != "" {
-		return from.Username
-	}
-	return from.FirstName
-}
-
-func (r *router) addressed(msg *tgctl.Message) (string, bool) {
-	raw, entities := msg.Text, msg.Entities
-	if raw == "" {
-		raw, entities = msg.Caption, msg.CaptionEntities
-	}
-	text := strings.TrimSpace(raw)
-	if msg.Chat.Type == chatTypePrivate {
-		return stripCommandMention(text, r.self.Username), true
-	}
-	if msg.ReplyTo != nil && msg.ReplyTo.From != nil && msg.ReplyTo.From.ID == r.self.ID {
-		return stripCommandMention(text, r.self.Username), true
-	}
-	stripped, mentioned := r.withoutMention(raw, entities)
-	if !mentioned {
-		return "", false
-	}
-	return stripCommandMention(strings.TrimSpace(stripped), r.self.Username), true
-}
-
-func (r *router) withoutMention(text string, entities []tgctl.Entity) (string, bool) {
-	units := utf16.Encode([]rune(text))
-	for _, candidate := range entities {
-		end := candidate.Offset + candidate.Length
-		if candidate.Offset < 0 || end > len(units) {
-			continue
-		}
-		if !r.mentions(candidate, string(utf16.Decode(units[candidate.Offset:end]))) {
-			continue
-		}
-		if candidate.Type == entityCommand {
-			return text, true
-		}
-		rest := slices.Concat(units[:candidate.Offset], units[end:])
-		return string(utf16.Decode(rest)), true
-	}
-	return "", false
-}
-
-func (r *router) mentions(candidate tgctl.Entity, covered string) bool {
-	switch candidate.Type {
-	case entityMention:
-		return strings.EqualFold(strings.TrimPrefix(covered, "@"), r.self.Username)
-	case entityUserLink:
-		return candidate.User != nil && candidate.User.ID == r.self.ID
-	case entityCommand:
-		_, target, found := strings.Cut(covered, "@")
-		return found && strings.EqualFold(target, r.self.Username)
-	}
-	return false
-}
-
-func stripCommandMention(text, username string) string {
-	if !strings.HasPrefix(text, "/") || username == "" {
-		return text
-	}
-	command, rest, _ := strings.Cut(text, " ")
-	name, target, found := strings.Cut(command, "@")
-	if !found || !strings.EqualFold(target, username) {
-		return text
-	}
-	return strings.TrimSpace(name + " " + rest)
-}
-
-func (r *router) stop(ctx context.Context, ctrl contracts.SessionControl, conv chatRef) {
+func (r *router) stop(ctx context.Context, ctrl contracts.SessionControl, conv address) {
 	session, _ := sessionOf(ctrl, conv)
 	if session == "" || !ctrl.Interrupt(session) {
 		r.post(ctx, conv, r.msgs.say(stopNoneKey, nil))
@@ -328,7 +301,7 @@ func (r *router) stop(ctx context.Context, ctrl contracts.SessionControl, conv c
 	r.post(ctx, conv, r.msgs.say(stopSentKey, nil))
 }
 
-func (r *router) interrupt(conv chatRef) {
+func (r *router) interrupt(conv address) {
 	ctrl := r.ctrl()
 	if ctrl == nil {
 		return
@@ -338,7 +311,7 @@ func (r *router) interrupt(conv chatRef) {
 	}
 }
 
-func (r *router) askRepo(ctx context.Context, ctrl contracts.SessionControl, conv chatRef, author int64, inbound contracts.Inbound) {
+func (r *router) askRepo(ctx context.Context, ctrl contracts.SessionControl, conv address, author int64, inbound contracts.Inbound) {
 	repos, err := ctrl.Repos(ctx)
 	if err != nil {
 		r.log.Warn("list repos failed", "err", err)
@@ -356,7 +329,7 @@ func (r *router) askRepo(ctx context.Context, ctrl contracts.SessionControl, con
 	for _, repo := range shown {
 		values, labels = append(values, repoValue(repo)), append(labels, repo.Name)
 	}
-	token := r.menus.put(conv.String(), values, labels)
+	token := r.menus.put(conv.chatRef.String(), conv.String(), values, labels)
 	r.mu.Lock()
 	r.pending[conv.String()] = pendingBind{token: token, author: author, inbound: inbound, values: values}
 	r.mu.Unlock()
@@ -364,8 +337,10 @@ func (r *router) askRepo(ctx context.Context, ctrl contracts.SessionControl, con
 	if len(repos) > len(shown) {
 		prompt = r.msgs.say(repoCappedKey, map[string]any{"Question": prompt, "Shown": len(shown), "Count": len(repos)})
 	}
-	out := tgctl.OutgoingMessage{ChatID: conv.chat, ThreadID: conv.thread, Text: prompt, ReplyMarkup: keyboard(bindPrefix, token, labels)}
-	if _, err := r.api.SendMessage(ctx, out); err != nil {
+	speak := r.voices.menuSpeakerAt(conv)
+	part := speak.frame(plain(prompt))
+	out := tgctl.OutgoingMessage{ChatID: conv.chat, ThreadID: conv.thread, Text: part.text, Entities: part.entities, ReplyMarkup: keyboard(bindPrefix, token, labels)}
+	if _, err := speak.api.SendMessage(ctx, out); err != nil {
 		r.log.Warn("repo menu failed", "err", err)
 	}
 }
@@ -377,12 +352,12 @@ func repoValue(repo contracts.RepoRef) string {
 	return remotePrefix + repo.Name
 }
 
-func (r *router) bind(ctx context.Context, ctrl contracts.SessionControl, conv chatRef, value string, inbound contracts.Inbound) {
+func (r *router) bind(ctx context.Context, ctrl contracts.SessionControl, conv address, value string, inbound contracts.Inbound) {
 	spec := contracts.CreateSession{
 		Name:      conv.sessionName(),
 		ChannelID: conv.String(),
 		Gateways:  []string{gatewayKind},
-		Agent:     r.set.agent,
+		Agent:     r.agentFor(conv),
 	}
 	if target, local := strings.CutPrefix(value, localPrefix); local {
 		spec.Project = target
@@ -398,9 +373,16 @@ func (r *router) bind(ctx context.Context, ctrl contracts.SessionControl, conv c
 	}
 }
 
-func (r *router) onCallback(ctx context.Context, query *tgctl.CallbackQuery) {
+func (r *router) agentFor(conv address) string {
+	if conv.agent != "" {
+		return conv.agent
+	}
+	return r.set.agent
+}
+
+func (r *router) onCallback(ctx context.Context, from origin, query *tgctl.CallbackQuery) {
 	answer, then := r.pick(ctx, query)
-	if err := r.api.AnswerCallbackQuery(ctx, tgctl.CallbackAnswer{CallbackQueryID: query.ID, Text: answer}); err != nil {
+	if err := from.api.AnswerCallbackQuery(ctx, tgctl.CallbackAnswer{CallbackQueryID: query.ID, Text: answer}); err != nil {
 		r.log.Warn("answer button press failed", "err", err)
 	}
 	if then != nil {
@@ -420,14 +402,19 @@ func (r *router) pick(ctx context.Context, query *tgctl.CallbackQuery) (string, 
 	if ctrl == nil {
 		return r.msgs.say(notReadyKey, nil), nil
 	}
-	conv := conversationOf(query.Message)
-	if parsed.kind == bindPrefix && !r.ownsBind(conv, parsed.token, query.From.ID) {
-		return r.msgs.say(ownedKey, nil), nil
-	}
-	picked, found := r.menus.take(parsed.token, conv.String(), parsed.index)
+	chat := conversationOf(query.Message)
+	_, target, found := r.menus.lookup(parsed.token, chat.String(), parsed.index)
 	if !found {
 		return r.msgs.say(goneKey, nil), nil
 	}
+	conv, err := parseAddress(target)
+	if err != nil {
+		return r.msgs.say(goneKey, nil), nil
+	}
+	if parsed.kind == bindPrefix && !r.ownsBind(conv, parsed.token, query.From.ID) {
+		return r.msgs.say(ownedKey, nil), nil
+	}
+	picked, _, _ := r.menus.take(parsed.token, chat.String(), parsed.index)
 	r.closeMenu(ctx, query.Message)
 	if parsed.kind == bindPrefix {
 		return r.pickRepo(ctrl, conv, parsed.token, picked)
@@ -439,14 +426,14 @@ func (r *router) pick(ctx context.Context, query *tgctl.CallbackQuery) (string, 
 	return r.msgs.say(pickedKey, map[string]any{"Choice": picked.label}), nil
 }
 
-func (r *router) ownsBind(conv chatRef, token string, from int64) bool {
+func (r *router) ownsBind(conv address, token string, from int64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	waiting, found := r.pending[conv.String()]
 	return !found || waiting.token != token || waiting.author == from
 }
 
-func (r *router) pickRepo(ctrl contracts.SessionControl, conv chatRef, token string, picked choice) (string, job) {
+func (r *router) pickRepo(ctrl contracts.SessionControl, conv address, token string, picked choice) (string, job) {
 	r.mu.Lock()
 	waiting, found := r.pending[conv.String()]
 	if found && waiting.token == token {
@@ -462,19 +449,19 @@ func (r *router) pickRepo(ctrl contracts.SessionControl, conv chatRef, token str
 
 func (r *router) closeMenu(ctx context.Context, msg *tgctl.Message) {
 	edit := tgctl.EditMessageReplyMarkup{ChatID: msg.Chat.ID, MessageID: msg.MessageID, ReplyMarkup: tgctl.InlineKeyboardMarkup{Rows: [][]tgctl.InlineKeyboardButton{}}}
-	if err := r.api.EditMessageReplyMarkup(ctx, edit); err != nil {
+	if err := r.voices.house.EditMessageReplyMarkup(ctx, edit); err != nil {
 		r.log.Warn("close the menu failed", "err", err)
 	}
 }
 
-func (r *router) post(ctx context.Context, conv chatRef, text string) {
+func (r *router) post(ctx context.Context, conv address, text string) {
 	r.postFormatted(ctx, conv, plain(text))
 }
 
-func (r *router) postFormatted(ctx context.Context, conv chatRef, text formatted) {
-	for _, part := range text.split(messageMaxUnits) {
-		out := tgctl.OutgoingMessage{ChatID: conv.chat, ThreadID: conv.thread, Text: part.text, Entities: part.entities, LinkPreview: noPreview()}
-		if _, err := r.api.SendMessage(ctx, out); err != nil {
+func (r *router) postFormatted(ctx context.Context, conv address, text formatted) {
+	speak := r.voices.speakerAt(conv)
+	for _, part := range text.split(speak.budget()) {
+		if _, err := speak.api.SendMessage(ctx, speak.message(conv, 0, part)); err != nil {
 			r.log.Warn("post failed", "err", err)
 		}
 	}
