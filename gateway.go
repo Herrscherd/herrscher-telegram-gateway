@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	contracts "github.com/Herrscherd/herrscher-contracts"
@@ -21,6 +22,7 @@ const (
 	inboundLane        = "in/"
 	outboundLane       = "out/"
 	webhookWord        = "webhook"
+	voiceSignInWait    = 10 * time.Second
 )
 
 var (
@@ -61,6 +63,7 @@ type Gateway struct {
 	mu      sync.Mutex
 	ctrl    contracts.SessionControl
 	sinks   map[string]*sink
+	drafts  atomic.Int64
 	polling bool
 	closed  bool
 	fault   error
@@ -101,7 +104,9 @@ func (g *Gateway) Manifest() contracts.Manifest {
 
 // BindSessionControl receives the daemon's session controller and starts the
 // long polling loops: the house bot's, then one for each agent voice that has
-// its own token. Only the first binding starts them, and none after Close.
+// its own token. Each such voice signs in and is registered before the binding
+// returns, so it speaks through its own bot from then on. Only the first
+// binding starts them, and none after Close.
 func (g *Gateway) BindSessionControl(ctrl contracts.SessionControl) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -124,19 +129,18 @@ func (g *Gateway) houseOrigin() origin {
 }
 
 func (g *Gateway) startVoice(agent string, client bot) {
-	g.poller.Go(func() { g.pollVoice(g.life(), agent, client) })
-}
-
-func (g *Gateway) pollVoice(ctx context.Context, agent string, client bot) {
+	ctx, cancel := context.WithTimeout(g.life(), voiceSignInWait)
 	identity, err := client.GetMe(ctx)
+	cancel()
 	if err != nil {
-		if ctx.Err() == nil {
+		if g.life().Err() == nil {
 			g.log.Warn("agent bot skipped, its token could not sign in", "agent", agent, "err", err)
 		}
 		return
 	}
 	g.voices.register(agent, client, identity)
-	g.poll(ctx, origin{agent: agent, api: client, self: identity})
+	from := origin{agent: agent, api: client, self: identity}
+	g.poller.Go(func() { g.poll(g.life(), from) })
 }
 
 func (g *Gateway) control() contracts.SessionControl {
@@ -248,7 +252,7 @@ func (g *Gateway) sinkFor(conv address) *sink {
 	key := conv.String()
 	found, ok := g.sinks[key]
 	if !ok {
-		found = &sink{conv: conv, speak: g.voices.speakerAt(conv), msgs: g.msgs, log: g.log, now: g.now}
+		found = &sink{conv: conv, voices: g.voices, drafts: &g.drafts, msgs: g.msgs, log: g.log, now: g.now}
 		g.sinks[key] = found
 	}
 	return found

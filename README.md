@@ -83,8 +83,11 @@ reads that list for each message.
 
 - An agent gets its own bot when the host gives it a token, read from
   `TELEGRAM_BOT_TOKEN_<AGENT>` (the agent name upper-cased, `-` written as
-  `_`). A token change needs a restart. A token that cannot sign in is
-  logged and skipped, and its agent falls back to the house bot.
+  `_`). A token change needs a restart. Each token signs in once, within 10
+  seconds, before the gateway starts answering for that agent, so a voice with
+  a valid token never speaks through the house bot. A token that cannot sign in
+  is logged and skipped, and its agent falls back to the house bot under its
+  header.
 - An agent with its own bot posts and receives through it, with no header.
   An agent without one speaks through the house bot, and its first line
   names it in bold.
@@ -104,8 +107,10 @@ reads that list for each message.
 - A `channels` agent only sees every message of a group when its bot has
   privacy mode off. Turn it off with `/setprivacy` in BotFather for that bot.
   With privacy mode on, a bot only sees commands, mentions and replies.
-- A draft that a user stops is matched on the bot that streamed it, so a
-  stop in a private chat reaches the agent that was speaking.
+- A draft that a user stops is matched on its draft id, which is unique across
+  the gateway, so a stop reaches only the turn that streamed it. Two agents
+  without their own bot can speak in the same private chat without sharing a
+  stop.
 
 ## The live turn
 
