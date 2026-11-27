@@ -20,8 +20,9 @@ herrscher plugin add github.com/Herrscherd/herrscher-telegram-gateway
 Create the bot with BotFather and give the daemon its token. Keep its privacy
 mode on, except where a `channels` agent needs to read every message of a group
 (see [One bot per agent](#one-bot-per-agent)). The bot must have no webhook:
-Telegram refuses to hand out updates by polling while one is set. The gateway then logs the cause and its liveness probe
-fails until the webhook is removed with `deleteWebhook`.
+Telegram refuses to hand out updates by polling while one is set. The gateway
+then logs the cause and its liveness probe fails until the webhook is removed
+with `deleteWebhook`.
 
 ## Configuration
 
@@ -83,13 +84,25 @@ of the daemon with their reply rule and their channels, and the gateway
 reads that list for each message.
 
 - An agent gets its own bot when the host gives it a token, read from
-  `TELEGRAM_BOT_TOKEN_<AGENT>` (the agent name upper-cased, `-` written as
-  `_`). A token change needs a restart. Each token signs in once, within 10
-  seconds, before the gateway starts answering for that agent, so a voice with
-  a valid token never speaks through the house bot. The sign-ins run in
-  parallel, and a token that hangs delays only its own agent. A token that
-  cannot sign in is logged without the token, skipped, and its agent falls back
-  to the house bot under its header.
+  `TELEGRAM_BOT_TOKEN_<AGENT>` (the agent name upper-cased, `-` written as `_`).
+  A token change needs a restart. Each token signs in once, within 10 seconds,
+  and the sign-ins run in parallel, so a token that hangs delays only its own
+  agent. A token that cannot sign in is logged without the token, skipped, and
+  its agent falls back to the house bot under its header.
+- A message that names an agent still signing in (`@agent` in the text, or a
+  `channels` chat of that agent) waits for its sign-in, in its own conversation
+  only, and is then decided with the final state: by the agent's bot, or by the
+  house under the header if the sign-in failed. So a voice with a valid token
+  never speaks through the house bot, and no message is lost to the wait. The
+  other conversations are not held.
+- A text `@agent` that is not a real mention of the agent's bot is not seen by
+  that bot under privacy mode, and once the agent has its own bot the house
+  never answers it under that agent's header. To reach an agent with its own
+  bot, mention its bot (`@ana_bot`).
+- Two agents cannot share a bot. An agent whose token is the house bot's, or the
+  token of an agent already signed in, is skipped: the first to sign in keeps
+  the bot, and the duplicate is logged once without its token and speaks through
+  the house under its header.
 - An agent with its own bot posts and receives through it, with no header.
   An agent without one speaks through the house bot, and its first line
   names it in bold.
@@ -118,11 +131,11 @@ reads that list for each message.
   The house bot needs it off too when a `channels` agent has no token of its
   own, or its token was refused, because the house then reads that group for
   the agent.
-- A draft that a user stops is matched on its draft id, which is unique across
-  the gateway and across restarts, since the counter starts from the clock, so
-  a stop reaches only the turn that streamed it. Two agents
-  without their own bot can speak in the same private chat without sharing a
-  stop.
+- A draft that a user stops is matched on its draft id. The ids are unique
+  across the gateway and across restarts because the counter starts from the
+  wall clock, which relies on the clock not stepping back, so a stop reaches
+  only the turn that streamed it. Two agents without their own bot can speak in
+  the same private chat without sharing a stop.
 
 ## The live turn
 
