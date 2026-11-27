@@ -214,7 +214,9 @@ func TestStopInterruptsOnlyTheTurnStillRunning(t *testing.T) {
 	}
 
 	gateway.EmitTo(conv, contracts.Event{T: eventHuman})
-	fake.push(stop(1, testOwner, 5), stop(2, 7, 1), stop(3, testOwner, 1))
+	gateway.EmitTo(conv, contracts.Event{T: eventChunk, Text: "working"})
+	drafted := decodeCall[tgctl.MessageDraft](t, fake.waitCalls(t, "sendMessageDraft", 1)[0])
+	fake.push(stop(1, testOwner, drafted.DraftID-1), stop(2, 7, drafted.DraftID), stop(3, testOwner, drafted.DraftID))
 	ctrl.waitFor(t, "the interrupt", func(c *fakeControl) bool { return len(c.interrupted) > 0 })
 	fake.push(privateText(4, 10, testOwner, "/stop@"+testBotName))
 	if got := decodeCall[tgctl.OutgoingMessage](t, fake.waitCalls(t, "sendMessage", 1)[0]).Text; got != "Stopping the turn." {
