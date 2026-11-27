@@ -108,20 +108,35 @@ func (g *Gateway) Manifest() contracts.Manifest {
 // returns, so it speaks through its own bot from then on. Only the first
 // binding starts them, and none after Close.
 func (g *Gateway) BindSessionControl(ctrl contracts.SessionControl) {
+	voices := directoryVoices(ctrl)
+	var signedIn sync.WaitGroup
+	if !g.startPolling(ctrl, voices, &signedIn) {
+		return
+	}
+	signedIn.Wait()
+}
+
+func (g *Gateway) startPolling(ctrl contracts.SessionControl, voices []contracts.AgentVoice, signedIn *sync.WaitGroup) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.closed || g.polling {
-		return
+		return false
 	}
 	g.ctrl = ctrl
 	g.polling = true
 	g.poller.Go(func() { g.poll(g.life(), g.houseOrigin()) })
-	for _, voice := range directoryVoices(ctrl) {
+	for _, voice := range voices {
 		if !voice.Token.Valid() || !validAgent(voice.Agent) {
 			continue
 		}
-		g.startVoice(voice.Agent, g.dial(voice.Token.Secret()))
+		client := g.dial(voice.Token.Secret())
+		signedIn.Add(1)
+		g.poller.Go(func() {
+			defer signedIn.Done()
+			g.startVoice(voice.Agent, client)
+		})
 	}
+	return true
 }
 
 func (g *Gateway) houseOrigin() origin {
