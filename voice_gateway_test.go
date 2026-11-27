@@ -352,3 +352,26 @@ func TestARejectedTokenChannelsAgentCapturesThroughTheHouse(t *testing.T) {
 		t.Fatalf("created = %+v", got)
 	}
 }
+
+func TestAFileIsFetchedOnceForEveryAddresseeOfTheMessage(t *testing.T) {
+	fake := newFakeTelegram(t)
+	fake.files["documents/doc1.txt"] = "notes"
+	ctrl := newFakeControl()
+	ctrl.live("tg-n100500", "-100500")
+	ctrl.live("tg-n100500-a-bob", "-100500@bob")
+	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "bob", "", contracts.ReplyInChannels, "-100500")}
+	startGateway(t, fake, ctrl, map[string]string{chatsSetting: "-100500"})
+
+	mention := "@" + testBotName
+	addressed := inGroup(1, 10, testOwner, mention+" see the file")
+	addressed.Message.Entities = []tgctl.Entity{{Type: entityMention, Offset: 0, Length: len(mention)}}
+	addressed.Message.Document = &tgctl.Document{FileID: "doc1", FileName: "notes.txt", MimeType: "text/plain", FileSize: 5}
+	fake.push(addressed)
+
+	ctrl.waitFor(t, "bob and the house both receive the message", func(c *fakeControl) bool {
+		return len(c.submitted["tg-n100500-a-bob"]) == 1 && len(c.submitted["tg-n100500"]) == 1
+	})
+	if fetched := len(fake.callsTo("getFile")); fetched != 1 {
+		t.Fatalf("the file was fetched %d times for two addressees, want once", fetched)
+	}
+}

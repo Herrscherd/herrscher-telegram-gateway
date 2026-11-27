@@ -182,31 +182,27 @@ func (r *router) heldMessages() int {
 
 func (r *router) handle(ctx context.Context, from origin, msg *tgctl.Message, members []*tgctl.Message) {
 	ctrl := r.ctrl()
-	refusalShown := false
-	for _, target := range r.route(from, msg, voicesOf(ctrl)) {
-		r.answer(ctx, from, ctrl, msg, members, target, &refusalShown)
-	}
-}
-
-func (r *router) answer(ctx context.Context, from origin, ctrl contracts.SessionControl, msg *tgctl.Message, members []*tgctl.Message, target addressee, refusalShown *bool) {
-	conv, text := target.conv, target.text
+	targets := r.route(from, msg, voicesOf(ctrl))
 	if ctrl == nil {
-		r.post(ctx, conv, r.msgs.say(notReadyKey, nil))
-		return
-	}
-	if strings.EqualFold(text, stopCommand) {
-		r.stop(ctx, ctrl, conv)
+		for _, target := range targets {
+			r.post(ctx, target.conv, r.msgs.say(notReadyKey, nil))
+		}
 		return
 	}
 	var attachments []contracts.Attachment
-	offered := 0
-	for _, member := range members {
-		attachments = append(attachments, r.files.stage(ctx, from.api, conv, member)...)
-		offered += len(filesOf(member))
+	if slices.ContainsFunc(targets, forwarded) {
+		attachments = r.stageOnce(ctx, from, msg, members)
 	}
-	if len(attachments) < offered && !*refusalShown {
-		*refusalShown = true
-		r.post(ctx, address{chatRef: conversationOf(msg)}, r.msgs.say(fileRefusedKey, nil))
+	for _, target := range targets {
+		r.answer(ctx, ctrl, msg, target, attachments)
+	}
+}
+
+func (r *router) answer(ctx context.Context, ctrl contracts.SessionControl, msg *tgctl.Message, target addressee, attachments []contracts.Attachment) {
+	conv, text := target.conv, target.text
+	if strings.EqualFold(text, stopCommand) {
+		r.stop(ctx, ctrl, conv)
+		return
 	}
 	if text == "" && len(attachments) == 0 {
 		return
@@ -216,7 +212,7 @@ func (r *router) answer(ctx context.Context, from origin, ctrl contracts.Session
 		Author:       displayName(msg.From),
 		AuthorID:     formatID(msg.From.ID),
 		Text:         text,
-		Attachments:  attachments,
+		Attachments:  slices.Clone(attachments),
 		MessageID:    contracts.MessageID(formatID(msg.MessageID)),
 	}
 	if r.deliver(ctx, ctrl, conv, inbound) {
