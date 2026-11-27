@@ -169,6 +169,24 @@ func TestAnExplicitMentionBeatsAChannelCapture(t *testing.T) {
 	}
 }
 
+func TestAnExplicitHouseMentionIsAnsweredAlongsideAReadyChannelAgent(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.live("tg-n100500", "-100500")
+	ctrl.live("tg-n100500-a-bob", "-100500@bob")
+	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "bob", "", contracts.ReplyInChannels, "-100500")}
+	startGateway(t, fake, ctrl, map[string]string{chatsSetting: "-100500"})
+
+	mention := "@" + testBotName
+	addressed := inGroup(1, 10, testOwner, mention+" what changed")
+	addressed.Message.Entities = []tgctl.Entity{{Type: entityMention, Offset: 0, Length: len(mention)}}
+	fake.push(addressed)
+
+	ctrl.waitFor(t, "bob captures the chat and the house answers its mention", func(c *fakeControl) bool {
+		return len(c.submitted["tg-n100500-a-bob"]) == 1 && len(c.submitted["tg-n100500"]) == 1
+	})
+}
+
 func TestAHouseDropsAMessageThatMentionsOnlyAnAgentBot(t *testing.T) {
 	fake := newFakeTelegram(t)
 	ctrl := newFakeControl()
