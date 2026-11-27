@@ -373,11 +373,10 @@ func TestAPendingAgentWithReplyNeverHoldsNothingBack(t *testing.T) {
 		voiceOf(t, "ana", voiceToken, contracts.ReplyNever, "-100500"),
 	})
 
-	fake.push(inGroup(1, 10, testOwner, "hello there"), privateText(2, 11, testOwner, "marker"))
-	ctrl.waitFor(t, "the marker", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 1 })
-	if submitted := ctrl.snapshot(func(c *fakeControl) bool { return len(c.submitted["tg-g"]) > 0 }); submitted {
-		t.Fatal("a pending agent with reply never held a chat back")
-	}
+	reply := inGroup(1, 10, testOwner, "@ana hello there")
+	reply.Message.ReplyTo = &tgctl.Message{MessageID: 5, From: &tgctl.User{ID: testBotID, IsBot: true}}
+	fake.push(reply)
+	ctrl.waitFor(t, "the house answers the reply", func(c *fakeControl) bool { return len(c.submitted["tg-g"]) == 1 })
 }
 
 func TestTwoAgentsSharingATokenOrTheHouseBotSkipTheDuplicateOnce(t *testing.T) {
