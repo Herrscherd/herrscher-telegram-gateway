@@ -212,7 +212,7 @@ func (r *router) answer(ctx context.Context, ctrl contracts.SessionControl, msg 
 		Author:       displayName(msg.From),
 		AuthorID:     formatID(msg.From.ID),
 		Text:         text,
-		Attachments:  slices.Clone(attachments),
+		Attachments:  attachments,
 		MessageID:    contracts.MessageID(formatID(msg.MessageID)),
 	}
 	if r.deliver(ctx, ctrl, conv, inbound) {
