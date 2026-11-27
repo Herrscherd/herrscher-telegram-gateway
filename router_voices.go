@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	contracts "github.com/Herrscherd/herrscher-contracts"
+	"github.com/Herrscherd/tgctl"
 )
 
 var nameMention = regexp.MustCompile(`(?:^|[^A-Za-z0-9_@-])@([A-Za-z0-9_-]+)`)
@@ -75,4 +76,52 @@ func pendingHold(voices []contracts.AgentVoice, bots *voiceBots, text string, co
 		}
 	}
 	return "", false
+}
+
+func (r *router) routeOwnVoice(from origin, msg *tgctl.Message, base chatRef, voices []contracts.AgentVoice) (address, string, bool) {
+	voice, ok := voiceNamed(voices, from.agent)
+	if !ok || voice.Reply == contracts.ReplyNever {
+		return address{}, "", false
+	}
+	conv := address{chatRef: base, agent: from.agent}
+	if text, addressed := addressedTo(from.self, msg); addressed {
+		return conv, text, true
+	}
+	if voice.Reply == contracts.ReplyInChannels && channelHas(voice.Channels, base) && !r.namesOtherAddressee(from, msg, voices) {
+		return conv, plainText(msg), true
+	}
+	return address{}, "", false
+}
+
+func (r *router) namesOtherAddressee(from origin, msg *tgctl.Message, voices []contracts.AgentVoice) bool {
+	raw, entities := textOf(msg)
+	if mentionedBy(raw, entities, r.voices.self) || r.voices.mentionsOtherAgentBot(raw, entities, from.self) {
+		return true
+	}
+	_, named := tokenlessMention(voices, r.voices, raw)
+	return named
+}
+
+func (r *router) routeHouse(from origin, msg *tgctl.Message, base chatRef, voices []contracts.AgentVoice) (address, string, bool) {
+	raw, entities := textOf(msg)
+	houseMentioned := mentionedBy(raw, entities, from.self)
+	if !houseMentioned && r.voices.mentionsAgentBot(raw, entities) {
+		return address{}, "", false
+	}
+	if !houseMentioned {
+		if agent, ok := tokenlessMention(voices, r.voices, raw); ok {
+			return address{chatRef: base, agent: agent}, plainText(msg), true
+		}
+		if agent, ok := tokenlessChannel(voices, r.voices, base); ok {
+			return address{chatRef: base, agent: agent}, plainText(msg), true
+		}
+		if agent, held := pendingHold(voices, r.voices, raw, base); held {
+			r.log.Info("message dropped, its agent is still signing in", "agent", agent)
+			return address{}, "", false
+		}
+	}
+	if text, addressed := addressedTo(from.self, msg); addressed {
+		return address{chatRef: base}, text, true
+	}
+	return address{}, "", false
 }
