@@ -181,7 +181,7 @@ func TestAHouseDropsAMessageThatMentionsOnlyAnAgentBot(t *testing.T) {
 	next.Message.Entities = []tgctl.Entity{agentMention(voiceBotName)}
 	fake.push(next)
 	fake.push(inGroup(2, 11, testOwner, "@"+testBotName+" marker"))
-	ctrl.waitFor(t, "the marker", func(c *fakeControl) bool { return len(c.created) == 1 })
+	ctrl.waitFor(t, "the marker", func(c *fakeControl) bool { return len(c.submitted["tg-n100500"]) == 1 })
 	if got := ctrl.submitted["tg-n100500"]; len(got) != 1 || got[0].Text != "marker" {
 		t.Fatalf("house routed the agent-bot message: submitted %+v", got)
 	}

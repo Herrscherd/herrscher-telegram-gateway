@@ -43,15 +43,16 @@ type pendingBind struct {
 }
 
 type router struct {
-	set      settings
-	msgs     messages
-	log      *slog.Logger
-	menus    *menuTable
-	voices   *voiceBots
-	files    stager
-	ctrl     func() contracts.SessionControl
-	noteUser func(ctx context.Context, conv address, noted notedPrompt)
-	later    func(ctx context.Context, conv address, next job) bool
+	set        settings
+	msgs       messages
+	log        *slog.Logger
+	menus      *menuTable
+	voices     *voiceBots
+	files      stager
+	ctrl       func() contracts.SessionControl
+	noteUser   func(ctx context.Context, conv address, noted notedPrompt)
+	forgetUser func(ctx context.Context, conv address, noted notedPrompt)
+	later      func(ctx context.Context, conv address, next job) bool
 
 	mu      sync.Mutex
 	pending map[string]pendingBind
@@ -179,7 +180,11 @@ func (r *router) heldMessages() int {
 
 func (r *router) handle(ctx context.Context, from origin, msg *tgctl.Message, members []*tgctl.Message) {
 	ctrl := r.ctrl()
-	conv, text, addressed := r.route(from, msg, voicesOf(ctrl))
+	voices := voicesOf(ctrl)
+	if err := r.awaitSignIns(ctx, from, msg, voices); err != nil {
+		return
+	}
+	conv, text, addressed := r.route(from, msg, voices)
 	if !addressed {
 		return
 	}
@@ -217,6 +222,26 @@ func (r *router) handle(ctx context.Context, from origin, msg *tgctl.Message, me
 	r.askRepo(ctx, ctrl, conv, msg.From.ID, inbound)
 }
 
+func (r *router) awaitSignIns(ctx context.Context, from origin, msg *tgctl.Message, voices []contracts.AgentVoice) error {
+	if !from.house() {
+		return nil
+	}
+	raw, _ := textOf(msg)
+	base := conversationOf(msg)
+	for _, voice := range voices {
+		if voice.Reply == contracts.ReplyNever {
+			continue
+		}
+		if !namesMentioned(raw, voice.Agent) && !(voice.Reply == contracts.ReplyInChannels && channelHas(voice.Channels, base)) {
+			continue
+		}
+		if err := r.voices.awaitSignIn(ctx, voice.Agent); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func voicesOf(ctrl contracts.SessionControl) []contracts.AgentVoice {
 	if ctrl == nil {
 		return nil
@@ -241,15 +266,15 @@ func (r *router) routeOwnVoice(from origin, msg *tgctl.Message, base chatRef, vo
 	if text, addressed := addressedTo(from.self, msg); addressed {
 		return conv, text, true
 	}
-	if voice.Reply == contracts.ReplyInChannels && channelHas(voice.Channels, base) && !r.namesOtherAddressee(msg, voices) {
+	if voice.Reply == contracts.ReplyInChannels && channelHas(voice.Channels, base) && !r.namesOtherAddressee(from, msg, voices) {
 		return conv, plainText(msg), true
 	}
 	return address{}, "", false
 }
 
-func (r *router) namesOtherAddressee(msg *tgctl.Message, voices []contracts.AgentVoice) bool {
+func (r *router) namesOtherAddressee(from origin, msg *tgctl.Message, voices []contracts.AgentVoice) bool {
 	raw, entities := textOf(msg)
-	if mentionedBy(raw, entities, r.voices.self) || r.voices.mentionsAgentBot(raw, entities) {
+	if mentionedBy(raw, entities, r.voices.self) || r.voices.mentionsOtherAgentBot(raw, entities, from.self) {
 		return true
 	}
 	_, named := tokenlessMention(voices, r.voices, raw)
@@ -369,13 +394,18 @@ func (r *router) deliver(ctx context.Context, ctrl contracts.SessionControl, con
 			return false
 		}
 	}
-	if !ctrl.Submit(session, inbound) {
-		return false
+	messageID, idErr := parseMessageID(string(inbound.MessageID))
+	prompt := notedPrompt{id: messageID, author: inbound.Author, text: inbound.Text}
+	if idErr == nil {
+		r.noteUser(ctx, conv, prompt)
 	}
-	if messageID, err := parseMessageID(string(inbound.MessageID)); err == nil {
-		r.noteUser(ctx, conv, notedPrompt{id: messageID, author: inbound.Author, text: inbound.Text})
+	if ctrl.Submit(session, inbound) {
+		return true
 	}
-	return true
+	if idErr == nil {
+		r.forgetUser(ctx, conv, prompt)
+	}
+	return false
 }
 
 func sessionOf(ctrl contracts.SessionControl, conv address) (string, bool) {

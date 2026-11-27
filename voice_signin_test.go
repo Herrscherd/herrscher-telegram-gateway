@@ -109,6 +109,89 @@ func TestCloseReturnsAtItsDeadlineWhileASignInIgnoresItsContext(t *testing.T) {
 	}
 }
 
+type slowSignIn struct {
+	bot
+
+	delay time.Duration
+}
+
+func (s slowSignIn) GetMe(ctx context.Context) (tgctl.User, error) {
+	select {
+	case <-time.After(s.delay):
+	case <-ctx.Done():
+		return tgctl.User{}, ctx.Err()
+	}
+	return s.bot.GetMe(ctx)
+}
+
+func TestAnAgentNamedWhileItsSignInIsSlowIsNeverAnsweredByTheHouse(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "ana", voiceToken, contracts.ReplyOnMention)}
+	gateway := unboundGateway(t, fake, func(token string) bot {
+		return slowSignIn{bot: tgctl.New(token, tgctl.WithBaseURL(fake.server.URL)), delay: 300 * time.Millisecond}
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
+		defer cancel()
+		if err := gateway.Close(ctx); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+	go gateway.BindSessionControl(ctrl)
+
+	fake.push(privateText(1, 10, testOwner, "@ana review"), privateText(2, 11, testOwner, "marker"))
+	for _, call := range fake.waitCalls(t, "sendMessage", 2) {
+		if sent := decodeCall[tgctl.OutgoingMessage](t, call); strings.HasPrefix(sent.Text, "ana\n") {
+			t.Fatalf("the house answered for ana under her header while her bot was signing in: %q", sent.Text)
+		}
+	}
+}
+
+func TestTwoAgentsSharingATokenOrTheHouseBotSkipTheDuplicateOnce(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.voices = []contracts.AgentVoice{
+		voiceOf(t, "ana", voiceToken, contracts.ReplyOnMention),
+		voiceOf(t, "bob", voiceToken, contracts.ReplyOnMention),
+		voiceOf(t, "carl", testToken, contracts.ReplyOnMention),
+	}
+	var logs syncBuffer
+	cfg := contracts.PluginConfig{Settings: map[string]string{tokenSetting: testToken, ownerSetting: "42"}}
+	set, err := newGatewaySet(t.Context(), cfg, fake.server.URL, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err != nil {
+		t.Fatalf("build the gateway: %v", err)
+	}
+	gateway, ok := set.Gateway.(*Gateway)
+	if !ok {
+		t.Fatalf("gateway is %T", set.Gateway)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
+		defer cancel()
+		if err := gateway.Close(ctx); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	gateway.BindSessionControl(ctrl)
+
+	if gateway.voices.hasOwn("ana") == gateway.voices.hasOwn("bob") {
+		t.Fatalf("two voices sharing one token: ana=%v bob=%v, want exactly one", gateway.voices.hasOwn("ana"), gateway.voices.hasOwn("bob"))
+	}
+	if gateway.voices.hasOwn("carl") {
+		t.Fatal("a voice whose token is the house bot's was registered")
+	}
+	if skipped := strings.Count(logs.String(), "agent bot skipped"); skipped != 2 {
+		t.Fatalf("skipped %d agent bots, want the two duplicates logged once each: %s", skipped, logs.String())
+	}
+	for _, secret := range []string{voiceToken, testToken} {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatalf("the log carries a token: %s", logs.String())
+		}
+	}
+}
+
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer

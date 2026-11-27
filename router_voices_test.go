@@ -12,8 +12,8 @@ const ghostBotName = "ghost_bot"
 func voiceRouterFixture(t *testing.T) (*router, []contracts.AgentVoice, origin) {
 	t.Helper()
 	bots := newVoiceBots(nil, tgctl.User{ID: testBotID, Username: testBotName})
-	bots.register("ana", nil, tgctl.User{ID: voiceBotID, Username: voiceBotName})
-	bots.register("ghost", nil, tgctl.User{ID: 111, IsBot: true, Username: ghostBotName})
+	bots.admit("ana", nil, tgctl.User{ID: voiceBotID, Username: voiceBotName})
+	bots.admit("ghost", nil, tgctl.User{ID: 111, IsBot: true, Username: ghostBotName})
 	voices := []contracts.AgentVoice{
 		voiceOf(t, "ana", voiceToken, contracts.ReplyInChannels, "-100500"),
 		voiceOf(t, "ghost", refusedToken, contracts.ReplyOnMention),
@@ -47,6 +47,15 @@ func TestAChannelsAgentWithItsOwnBotLeavesAMessageNamingAnotherAddressee(t *test
 				t.Fatalf("ana captured %q, which names another addressee", msg.Text)
 			}
 		})
+	}
+}
+
+func TestAChannelsAgentDoesNotCountItsOwnMentionAsAnotherAddressee(t *testing.T) {
+	router, voices, from := voiceRouterFixture(t)
+	msg := groupText("@"+voiceBotName+" take this", mentionOf(voiceBotName))
+
+	if router.namesOtherAddressee(from, &msg, voices) {
+		t.Fatal("the agent's own mention was counted as naming another addressee")
 	}
 }
 

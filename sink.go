@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -94,6 +95,13 @@ func (s *sink) noteUser(ctx context.Context, noted notedPrompt) {
 		s.prompts = s.prompts[1:]
 	}
 	s.prompts = append(s.prompts, noted)
+}
+
+func (s *sink) forgetUser(noted notedPrompt) {
+	if s.turn != nil && s.turn.prompt == noted.id {
+		s.turn.prompt = 0
+	}
+	s.prompts = slices.DeleteFunc(s.prompts, func(kept notedPrompt) bool { return kept.id == noted.id })
 }
 
 func (s *sink) dropAbandoned(event contracts.Event) {

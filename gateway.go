@@ -82,12 +82,13 @@ func newGateway(ctx context.Context, api bot, set settings, self tgctl.User, msg
 	gateway.drafts.Store(gateway.now().UnixMilli())
 	gateway.router = &router{
 		set: set, msgs: msgs, log: log, menus: gateway.menus, voices: voices,
-		files:    stager{root: stagingRoot(), log: log},
-		ctrl:     gateway.control,
-		noteUser: gateway.noteUser,
-		later:    gateway.later,
-		pending:  make(map[string]pendingBind),
-		albums:   make(map[string]*heldAlbum),
+		files:      stager{root: stagingRoot(), log: log},
+		ctrl:       gateway.control,
+		noteUser:   gateway.noteUser,
+		forgetUser: gateway.forgetUser,
+		later:      gateway.later,
+		pending:    make(map[string]pendingBind),
+		albums:     make(map[string]*heldAlbum),
 	}
 	return gateway
 }
@@ -105,31 +106,33 @@ func (g *Gateway) Manifest() contracts.Manifest {
 
 // BindSessionControl receives the daemon's session controller and starts the
 // long polling loops: the house bot's, then one for each agent voice that has
-// its own token. Each such voice signs in and is registered before the binding
-// returns, so it speaks through its own bot from then on. Only the first
-// binding starts them, and none after Close.
+// its own token. Each such voice signs in before the binding returns, so it
+// speaks through its own bot from then on. A message that could reach a voice
+// still signing in waits for that sign-in in its own conversation. Only the
+// first binding starts them, and none after Close.
 func (g *Gateway) BindSessionControl(ctrl contracts.SessionControl) {
-	voices := directoryVoices(ctrl)
-	var signedIn sync.WaitGroup
-	if !g.startPolling(ctrl, voices, &signedIn) {
+	signedIn := g.startPolling(ctrl, directoryVoices(ctrl))
+	if signedIn == nil {
 		return
 	}
 	signedIn.Wait()
 }
 
-func (g *Gateway) startPolling(ctrl contracts.SessionControl, voices []contracts.AgentVoice, signedIn *sync.WaitGroup) bool {
+func (g *Gateway) startPolling(ctrl contracts.SessionControl, voices []contracts.AgentVoice) *sync.WaitGroup {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.closed || g.polling {
-		return false
+		return nil
 	}
 	g.ctrl = ctrl
 	g.polling = true
+	owned := voicesWithOwnToken(voices)
+	for _, voice := range owned {
+		g.voices.expect(voice.Agent)
+	}
 	g.poller.Go(func() { g.poll(g.life(), g.houseOrigin()) })
-	for _, voice := range voices {
-		if !voice.Token.Valid() || !validAgent(voice.Agent) {
-			continue
-		}
+	signedIn := new(sync.WaitGroup)
+	for _, voice := range owned {
 		client := g.dial(voice.Token.Secret())
 		signedIn.Add(1)
 		g.poller.Go(func() {
@@ -137,7 +140,17 @@ func (g *Gateway) startPolling(ctrl contracts.SessionControl, voices []contracts
 			g.startVoice(voice.Agent, client)
 		})
 	}
-	return true
+	return signedIn
+}
+
+func voicesWithOwnToken(voices []contracts.AgentVoice) []contracts.AgentVoice {
+	var owned []contracts.AgentVoice
+	for _, voice := range voices {
+		if voice.Token.Valid() && validAgent(voice.Agent) {
+			owned = append(owned, voice)
+		}
+	}
+	return owned
 }
 
 func (g *Gateway) houseOrigin() origin {
@@ -149,12 +162,16 @@ func (g *Gateway) startVoice(agent string, client bot) {
 	identity, err := client.GetMe(ctx)
 	cancel()
 	if err != nil {
+		g.voices.refuse(agent)
 		if g.life().Err() == nil {
 			g.log.Warn("agent bot skipped, its token could not sign in", "agent", agent, "err", err)
 		}
 		return
 	}
-	g.voices.register(agent, client, identity)
+	if !g.voices.admit(agent, client, identity) {
+		g.log.Warn("agent bot skipped, its token is already the bot of the house or of another agent", "agent", agent, "bot_id", identity.ID)
+		return
+	}
 	from := origin{agent: agent, api: client, self: identity}
 	g.poller.Go(func() { g.poll(g.life(), from) })
 }
@@ -312,6 +329,11 @@ func (g *Gateway) later(ctx context.Context, conv address, next job) bool {
 func (g *Gateway) noteUser(ctx context.Context, conv address, noted notedPrompt) {
 	target := g.sinkFor(conv)
 	g.lanes.push(ctx, outboundLane+conv.String(), func(ctx context.Context) { target.noteUser(ctx, noted) })
+}
+
+func (g *Gateway) forgetUser(ctx context.Context, conv address, noted notedPrompt) {
+	target := g.sinkFor(conv)
+	g.lanes.push(ctx, outboundLane+conv.String(), func(context.Context) { target.forgetUser(noted) })
 }
 
 // EmitTo renders one live turn event into the conversation the host routed it
