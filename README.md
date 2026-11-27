@@ -17,9 +17,10 @@ Status: experimental.
 herrscher plugin add github.com/Herrscherd/herrscher-telegram-gateway
 ```
 
-Create the bot with BotFather, keep its privacy mode on, and give the daemon its
-token. The bot must have no webhook: Telegram refuses to hand out updates by
-polling while one is set. The gateway then logs the cause and its liveness probe
+Create the bot with BotFather and give the daemon its token. Keep its privacy
+mode on, except where a `channels` agent needs to read every message of a group
+(see [One bot per agent](#one-bot-per-agent)). The bot must have no webhook:
+Telegram refuses to hand out updates by polling while one is set. The gateway then logs the cause and its liveness probe
 fails until the webhook is removed with `deleteWebhook`.
 
 ## Configuration
@@ -85,18 +86,25 @@ reads that list for each message.
   `TELEGRAM_BOT_TOKEN_<AGENT>` (the agent name upper-cased, `-` written as
   `_`). A token change needs a restart. Each token signs in once, within 10
   seconds, before the gateway starts answering for that agent, so a voice with
-  a valid token never speaks through the house bot. A token that cannot sign in
-  is logged and skipped, and its agent falls back to the house bot under its
-  header.
+  a valid token never speaks through the house bot. The sign-ins run in
+  parallel, and a token that hangs delays only its own agent. A token that
+  cannot sign in is logged without the token, skipped, and its agent falls back
+  to the house bot under its header.
 - An agent with its own bot posts and receives through it, with no header.
   An agent without one speaks through the house bot, and its first line
   names it in bold.
+- Two agent names that map to the same env key (`ana-bot` and `ana_bot`) get
+  no token from the host, which logs the clash once. Both then speak through
+  the house bot under their header.
 - A conversation with an agent is addressed `<chat>@<agent>` inside the
-  gateway, and its session is named `tg-<chat>-<agent>`. A name too long for
-  the session limit is shortened to a hash of the address, which stays
-  stable for the same conversation and agent.
-- Keyboards and their presses always go through the house bot, so a press
-  reaches the house poller whichever bot posted the keyboard.
+  gateway, and its session is named `tg-<chat>[-<thread>]-a-<agent>`, for
+  example `tg-n100500-7-a-ana`. A name longer than 64 characters is shortened
+  to `tg-a-` and a hash of the address, which stays stable for the same
+  conversation and agent.
+- Keyboards are always posted by the house bot, under the agent header, even
+  for an agent that has its own bot, and their presses are read by the house
+  poller. Telegram sends a press to the bot that posted its keyboard, so the
+  house posts them all.
 - Reply rules: `never` drops every message. `mention` (the default) answers
   when the agent is addressed: its `@username`, a text mention of it, a
   `/command@username`, a reply to one of its messages, or a private chat
@@ -104,11 +112,15 @@ reads that list for each message.
   the text. `channels` adds every message of the chats listed for the agent.
 - A message that mentions an agent bot and not the house bot is not answered
   by the house. A message authored by any of our bots is dropped everywhere.
-- A `channels` agent only sees every message of a group when its bot has
-  privacy mode off. Turn it off with `/setprivacy` in BotFather for that bot.
-  With privacy mode on, a bot only sees commands, mentions and replies.
+- Privacy mode decides what a bot sees in a group. With it on, a bot sees only
+  commands, mentions and replies. A `channels` agent that has its own bot
+  needs privacy mode off for that bot, set with `/setprivacy` in BotFather.
+  The house bot needs it off too when a `channels` agent has no token of its
+  own, or its token was refused, because the house then reads that group for
+  the agent.
 - A draft that a user stops is matched on its draft id, which is unique across
-  the gateway, so a stop reaches only the turn that streamed it. Two agents
+  the gateway and across restarts, since the counter starts from the clock, so
+  a stop reaches only the turn that streamed it. Two agents
   without their own bot can speak in the same private chat without sharing a
   stop.
 
@@ -135,6 +147,8 @@ Answers are formatted with message entities, never with escaped MarkdownV2: the
 gateway reads the Markdown a model writes (bold, italic, strikethrough, inline
 code, code blocks with their language, links, headings) and sends plain text
 with entities counted in UTF-16, split at the 4096 unit limit on line breaks.
+An agent's header counts in that limit: each part is measured with the header
+on it, so a message never exceeds 4096 units once the header is added.
 
 ## Menus and approvals
 
