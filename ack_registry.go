@@ -20,7 +20,7 @@ type ackEntry struct {
 	draining bool
 }
 
-func (e *ackEntry) schedule(step func()) bool {
+func (e *ackEntry) enqueue(step func()) bool {
 	e.pending = append(e.pending, step)
 	if e.draining {
 		return false
@@ -49,13 +49,13 @@ func (r *ackRegistry) open(ctx context.Context, key ackKey, api bot) {
 	}
 	entry.shown = true
 	entry.api = api
-	startDrain := entry.schedule(func() {
+	mustDrain := entry.enqueue(func() {
 		if err := r.set(ctx, api, key, ackEmoji); err != nil {
 			r.log.Warn("ack reaction failed", "err", err)
 		}
 	})
 	r.mu.Unlock()
-	if startDrain {
+	if mustDrain {
 		r.drain(key, entry)
 	}
 }
@@ -83,13 +83,13 @@ func (r *ackRegistry) close(ctx context.Context, key ackKey, emoji string) {
 		r.mu.Unlock()
 		return
 	}
-	startDrain := entry.schedule(func() {
+	mustDrain := entry.enqueue(func() {
 		if err := r.set(ctx, api, key, outcome); err != nil {
 			r.log.Warn("outcome reaction failed", "err", err)
 		}
 	})
 	r.mu.Unlock()
-	if startDrain {
+	if mustDrain {
 		r.drain(key, entry)
 	}
 }
