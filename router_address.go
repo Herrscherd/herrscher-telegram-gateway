@@ -20,6 +20,15 @@ func textOf(msg *tgctl.Message) (string, []tgctl.Entity) {
 	return msg.Caption, msg.CaptionEntities
 }
 
+func textWithoutHouse(msg *tgctl.Message, house tgctl.User) string {
+	raw, entities := textOf(msg)
+	stripped, mentioned := withoutMention(raw, entities, house)
+	if !mentioned {
+		return plainText(msg)
+	}
+	return stripCommandMention(strings.TrimSpace(stripped), house.Username)
+}
+
 func addressedTo(self tgctl.User, msg *tgctl.Message) (string, bool) {
 	raw, entities := textOf(msg)
 	text := strings.TrimSpace(raw)

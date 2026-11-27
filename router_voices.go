@@ -122,7 +122,7 @@ func (r *router) routeHouse(from origin, msg *tgctl.Message, base chatRef, voice
 	}
 	var targets []addressee
 	if agent, ok := capturingAgent(voices, r.voices, raw, base); ok {
-		capture := addressee{conv: address{chatRef: base, agent: agent}, text: plainText(msg)}
+		capture := addressee{conv: address{chatRef: base, agent: agent}, text: textWithoutHouse(msg, from.self)}
 		if !houseMentioned {
 			return []addressee{capture}
 		}

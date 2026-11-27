@@ -124,13 +124,15 @@ reads that list for each message.
   house posts them all.
 - Reply rules: `never` drops every message. `mention` (the default) answers
   when the agent is addressed: its `@username`, a text mention of it, a
-  `/command@username`, a reply to one of its messages, or a private chat
-  with it. An agent without its own bot also answers to `@agent` written in
-  the text. `channels` adds every message of the chats listed for the agent.
-  An explicit mention of the house bot is answered alongside a token-less agent,
+  `/command@username`, a reply to one of its messages, or a private chat with
+  it. An agent without its own bot also answers to `@agent` written in the
+  text. `channels` adds every message of the chats listed for the agent. An
+  explicit mention of the house bot is answered alongside a token-less agent,
   as on Discord: the agent named in the text (`@agent`), or else the `channels`
   agent that captures the chat, answers first, then the house. A reply to the
-  house is not a mention, so the agent alone answers it.
+  house is not a mention, so the agent alone answers it. The house mention is
+  taken out of the text the capturing agent receives, so `@house /stop` stops a
+  turn as `/stop` does.
 - A message that mentions an agent bot and not the house bot is not answered
   by the house. A message authored by any of our bots is dropped everywhere.
 - Privacy mode decides what a bot sees in a group. With it on, a bot sees only

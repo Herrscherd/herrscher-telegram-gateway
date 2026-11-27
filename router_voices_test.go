@@ -134,3 +134,42 @@ func TestAChannelsAgentLeavesAMessageNamingANeverOrSigningInAgent(t *testing.T) 
 		})
 	}
 }
+
+func TestAHouseMentionIsStrippedFromTheTextAChannelsAgentCaptures(t *testing.T) {
+	cases := map[string]struct {
+		msg  tgctl.Message
+		want string
+	}{
+		"stop after a house mention": {
+			msg:  groupText("@"+testBotName+" /stop", mentionOf(testBotName)),
+			want: "/stop",
+		},
+		"stop as a house command": {
+			msg:  groupText("/stop@"+testBotName, tgctl.Entity{Type: entityCommand, Offset: 0, Length: len("/stop@" + testBotName)}),
+			want: "/stop",
+		},
+		"prompt after a house mention": {
+			msg:  groupText("@"+testBotName+" take this", mentionOf(testBotName)),
+			want: "take this",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			voices := []contracts.AgentVoice{voiceOf(t, "bob", "", contracts.ReplyInChannels, "-100500")}
+			router, house := houseRouter()
+			captured := false
+			for _, target := range router.route(house, &tc.msg, voices) {
+				if target.conv.agent != "bob" {
+					continue
+				}
+				captured = true
+				if target.text != tc.want {
+					t.Fatalf("bob captures %q, want %q", target.text, tc.want)
+				}
+			}
+			if !captured {
+				t.Fatal("bob did not capture the chat")
+			}
+		})
+	}
+}
