@@ -127,10 +127,10 @@ reads that list for each message.
   `/command@username`, a reply to one of its messages, or a private chat
   with it. An agent without its own bot also answers to `@agent` written in
   the text. `channels` adds every message of the chats listed for the agent.
-  A token-less `channels` agent that captures a chat answers an explicit
-  mention of the house bot there too: the agent answers first, then the house,
-  as on Discord. A reply to the house is not a mention, so the agent alone
-  answers it.
+  An explicit mention of the house bot is answered alongside a token-less agent,
+  as on Discord: the agent named in the text (`@agent`), or else the `channels`
+  agent that captures the chat, answers first, then the house. A reply to the
+  house is not a mention, so the agent alone answers it.
 - A message that mentions an agent bot and not the house bot is not answered
   by the house. A message authored by any of our bots is dropped everywhere.
 - Privacy mode decides what a bot sees in a group. With it on, a bot sees only
@@ -198,7 +198,8 @@ A document or a photo (its largest size) is fetched with `getFile` and staged
 under the host's attachment tree (`$TMPDIR/herrscher-attachments/telegram`),
 then handed over as a `file://` path. A file over 10 MiB is skipped before it is
 downloaded, and a file name is cut to 120 bytes. The manifest declares no
-attachment host, so the host never fetches a Telegram URL itself.
+attachment host, so the host never fetches a Telegram URL itself. A refused file
+is explained once per message, even when the message reaches several agents.
 
 An album arrives as one message per item. The gateway gathers the items that
 share a `media_group_id` until a second passes without a new one, and hands them
