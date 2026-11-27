@@ -46,19 +46,20 @@ var (
 // updates when the host binds its session control, one long poll for the house
 // bot and one for each agent that has its own token, and stops on Close.
 type Gateway struct {
-	api    bot
-	self   tgctl.User
-	voices *voiceBots
-	dial   func(token string) bot
-	msgs   messages
-	log    *slog.Logger
-	menus  *menuTable
-	router *router
-	lanes  *lanes
-	life   lifetime
-	cancel context.CancelFunc
-	now    func() time.Time
-	album  time.Duration
+	api        bot
+	self       tgctl.User
+	voices     *voiceBots
+	dial       func(token string) bot
+	msgs       messages
+	log        *slog.Logger
+	menus      *menuTable
+	router     *router
+	lanes      *lanes
+	life       lifetime
+	cancel     context.CancelFunc
+	now        func() time.Time
+	album      time.Duration
+	signInWait time.Duration
 
 	mu      sync.Mutex
 	ctrl    contracts.SessionControl
@@ -76,7 +77,7 @@ func newGateway(ctx context.Context, api bot, set settings, self tgctl.User, msg
 	voices := newVoiceBots(api, self)
 	gateway := &Gateway{
 		api: api, self: self, voices: voices, dial: dial, msgs: msgs, log: log,
-		menus: newMenuTable(), lanes: newLanes(), life: life, cancel: cancel, now: time.Now, album: albumWindow,
+		menus: newMenuTable(), lanes: newLanes(), life: life, cancel: cancel, now: time.Now, album: albumWindow, signInWait: voiceSignInWait,
 		sinks: make(map[string]*sink),
 	}
 	gateway.drafts.Store(gateway.now().UnixMilli())
@@ -107,23 +108,20 @@ func (g *Gateway) Manifest() contracts.Manifest {
 
 // BindSessionControl receives the daemon's session controller and starts the
 // long polling loops: the house bot's, then one for each agent voice that has
-// its own token. Each such voice signs in before the binding returns, so it
-// speaks through its own bot from then on. A message that names a voice still
-// signing in is dropped until that sign-in settles, at most 10 seconds later.
-// Only the first binding starts them, and none after Close.
+// its own token. Each such voice signs in the background, within 10 seconds,
+// and speaks through its own bot once it has. Until then a message that names
+// it is not answered for it: a token-less voice answers in its place, and
+// otherwise the message is dropped. Only the first binding starts them, and
+// none after Close.
 func (g *Gateway) BindSessionControl(ctrl contracts.SessionControl) {
-	signedIn := g.startPolling(ctrl, directoryVoices(ctrl))
-	if signedIn == nil {
-		return
-	}
-	signedIn.Wait()
+	g.startPolling(ctrl, directoryVoices(ctrl))
 }
 
-func (g *Gateway) startPolling(ctrl contracts.SessionControl, voices []contracts.AgentVoice) *sync.WaitGroup {
+func (g *Gateway) startPolling(ctrl contracts.SessionControl, voices []contracts.AgentVoice) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.closed || g.polling {
-		return nil
+		return
 	}
 	g.ctrl = ctrl
 	g.polling = true
@@ -132,16 +130,10 @@ func (g *Gateway) startPolling(ctrl contracts.SessionControl, voices []contracts
 		g.voices.expect(voice.Agent)
 	}
 	g.poller.Go(func() { g.poll(g.life(), g.houseOrigin()) })
-	signedIn := new(sync.WaitGroup)
 	for _, voice := range owned {
 		client := g.dial(voice.Token.Secret())
-		signedIn.Add(1)
-		g.poller.Go(func() {
-			defer signedIn.Done()
-			g.startVoice(voice.Agent, client)
-		})
+		g.poller.Go(func() { g.startVoice(voice.Agent, client) })
 	}
-	return signedIn
 }
 
 func voicesWithOwnToken(voices []contracts.AgentVoice) []contracts.AgentVoice {
@@ -159,7 +151,7 @@ func (g *Gateway) houseOrigin() origin {
 }
 
 func (g *Gateway) startVoice(agent string, client bot) {
-	ctx, cancel := context.WithTimeout(g.life(), voiceSignInWait)
+	ctx, cancel := context.WithTimeout(g.life(), g.signInWait)
 	identity, err := client.GetMe(ctx)
 	cancel()
 	if err != nil {

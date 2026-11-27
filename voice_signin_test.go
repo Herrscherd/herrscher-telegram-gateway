@@ -26,6 +26,22 @@ func (hangingSignIn) GetMe(ctx context.Context) (tgctl.User, error) {
 	return tgctl.User{}, ctx.Err()
 }
 
+type deafSignIn struct {
+	bot
+
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (s deafSignIn) GetMe(context.Context) (tgctl.User, error) {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	<-s.release
+	return tgctl.User{}, errors.New("released")
+}
+
 type stuckSignIn struct {
 	bot
 
@@ -33,13 +49,17 @@ type stuckSignIn struct {
 	release <-chan struct{}
 }
 
-func (s stuckSignIn) GetMe(context.Context) (tgctl.User, error) {
+func (s stuckSignIn) GetMe(ctx context.Context) (tgctl.User, error) {
 	select {
 	case s.entered <- struct{}{}:
 	default:
 	}
-	<-s.release
-	return tgctl.User{}, errors.New("released")
+	select {
+	case <-ctx.Done():
+		return tgctl.User{}, ctx.Err()
+	case <-s.release:
+		return tgctl.User{}, errors.New("released")
+	}
 }
 
 func unboundGateway(t *testing.T, fake *fakeTelegram, dial func(token string) bot, extra map[string]string) *Gateway {
@@ -59,6 +79,17 @@ func unboundGateway(t *testing.T, fake *fakeTelegram, dial func(token string) bo
 	return gateway
 }
 
+func closeAtCleanup(t *testing.T, gateway *Gateway) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
+		defer cancel()
+		if err := gateway.Close(ctx); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+}
+
 func TestTheHouseIsServedWhileAnAgentTokenIsStillSigningIn(t *testing.T) {
 	fake := newFakeTelegram(t)
 	ctrl := newFakeControl()
@@ -67,17 +98,87 @@ func TestTheHouseIsServedWhileAnAgentTokenIsStillSigningIn(t *testing.T) {
 	gateway := unboundGateway(t, fake, func(token string) bot {
 		return hangingSignIn{bot: tgctl.New(token, tgctl.WithBaseURL(fake.server.URL))}
 	}, nil)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
-		defer cancel()
-		if err := gateway.Close(ctx); err != nil {
-			t.Errorf("close: %v", err)
-		}
-	})
+	closeAtCleanup(t, gateway)
 	go gateway.BindSessionControl(ctrl)
 
 	fake.push(privateText(1, 10, testOwner, "marker"))
 	ctrl.waitFor(t, "the house message", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 1 })
+}
+
+func TestBindSessionControlDoesNotWaitForASignIn(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "ana", voiceToken, contracts.ReplyOnMention)}
+	gateway := unboundGateway(t, fake, func(token string) bot {
+		return hangingSignIn{bot: tgctl.New(token, tgctl.WithBaseURL(fake.server.URL))}
+	}, nil)
+	gateway.signInWait = 2 * time.Second
+	closeAtCleanup(t, gateway)
+
+	started := time.Now()
+	gateway.BindSessionControl(ctrl)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("the binding waited %s for a sign-in", elapsed)
+	}
+}
+
+func TestASignInPastItsWindowIsRefusedAndTheAgentFallsBackToTheHouse(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.live("tg-42", "42")
+	ctrl.live("tg-42-a-ana", "42@ana")
+	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "ana", voiceToken, contracts.ReplyOnMention)}
+	gateway := unboundGateway(t, fake, func(token string) bot {
+		return hangingSignIn{bot: tgctl.New(token, tgctl.WithBaseURL(fake.server.URL))}
+	}, nil)
+	gateway.signInWait = 20 * time.Millisecond
+	closeAtCleanup(t, gateway)
+	gateway.BindSessionControl(ctrl)
+	awaitSettled(t, gateway, "ana")
+
+	if gateway.voices.hasOwn("ana") {
+		t.Fatal("a sign-in past its window was admitted")
+	}
+	fake.push(privateText(1, 10, testOwner, "@ana review"))
+	ctrl.waitFor(t, "the message routed to ana's session by the house", func(c *fakeControl) bool { return len(c.submitted["tg-42-a-ana"]) == 1 })
+}
+
+func TestCloseDuringASignInReturnsPromptlyAndStopsTheVoice(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "ana", voiceToken, contracts.ReplyOnMention)}
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	gateway := unboundGateway(t, fake, func(token string) bot {
+		return stuckSignIn{bot: tgctl.New(token, tgctl.WithBaseURL(fake.server.URL)), entered: entered, release: release}
+	}, nil)
+	go gateway.BindSessionControl(ctrl)
+	select {
+	case <-entered:
+	case <-time.After(waitLimit):
+		t.Fatal("the sign-in never started")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	closed := make(chan error, 1)
+	start := time.Now()
+	go func() { closed <- gateway.Close(ctx) }()
+	select {
+	case err := <-closed:
+		if elapsed := time.Since(start); err != nil || elapsed > time.Second {
+			t.Fatalf("close returned %v after %s during a sign-in, want nil within 1s", err, elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("close did not return while a sign-in was pending")
+	}
+	if gateway.voices.hasOwn("ana") {
+		t.Fatal("a voice was admitted after close")
+	}
+	if polls := fake.callsWith(voiceToken, "getUpdates"); len(polls) != 0 {
+		t.Fatalf("the voice polled %d times after close", len(polls))
+	}
 }
 
 func TestCloseReturnsAtItsDeadlineWhileASignInIgnoresItsContext(t *testing.T) {
@@ -88,7 +189,7 @@ func TestCloseReturnsAtItsDeadlineWhileASignInIgnoresItsContext(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	gateway := unboundGateway(t, fake, func(token string) bot {
-		return stuckSignIn{bot: tgctl.New(token, tgctl.WithBaseURL(fake.server.URL)), entered: entered, release: release}
+		return deafSignIn{bot: tgctl.New(token, tgctl.WithBaseURL(fake.server.URL)), entered: entered, release: release}
 	}, nil)
 	go gateway.BindSessionControl(ctrl)
 	select {
@@ -120,13 +221,7 @@ func TestAnAddressedMessageInAnotherChatIsSubmittedWhileAnAgentSignInHangs(t *te
 	gateway := unboundGateway(t, fake, func(token string) bot {
 		return hangingSignIn{bot: tgctl.New(token, tgctl.WithBaseURL(fake.server.URL))}
 	}, map[string]string{chatsSetting: "-100500"})
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
-		defer cancel()
-		if err := gateway.Close(ctx); err != nil {
-			t.Errorf("close: %v", err)
-		}
-	})
+	closeAtCleanup(t, gateway)
 	go gateway.BindSessionControl(ctrl)
 
 	batch := make([]tgctl.Update, 0, laneDepth+3)
@@ -142,25 +237,20 @@ func TestAnAddressedMessageInAnotherChatIsSubmittedWhileAnAgentSignInHangs(t *te
 	}
 }
 
-func namingAgentWhileSigningIn(t *testing.T) (*fakeTelegram, *fakeControl, *Gateway, func()) {
+type pendingSignIn struct {
+	gateway *Gateway
+	release func()
+}
+
+func signingInGateway(t *testing.T, fake *fakeTelegram, ctrl *fakeControl, voices []contracts.AgentVoice, settings map[string]string) pendingSignIn {
 	t.Helper()
-	fake := newFakeTelegram(t)
-	ctrl := newFakeControl()
-	ctrl.live("tg-42", "42")
-	ctrl.live("tg-42-a-ana", "42@ana")
-	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "ana", voiceToken, contracts.ReplyOnMention)}
+	ctrl.voices = voices
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
 	gateway := unboundGateway(t, fake, func(token string) bot {
 		return stuckSignIn{bot: tgctl.New(token, tgctl.WithBaseURL(fake.server.URL)), entered: entered, release: release}
-	}, nil)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
-		defer cancel()
-		if err := gateway.Close(ctx); err != nil {
-			t.Errorf("close: %v", err)
-		}
-	})
+	}, settings)
+	closeAtCleanup(t, gateway)
 	releaseSignIn := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(releaseSignIn)
 	go gateway.BindSessionControl(ctrl)
@@ -169,7 +259,17 @@ func namingAgentWhileSigningIn(t *testing.T) (*fakeTelegram, *fakeControl, *Gate
 	case <-time.After(waitLimit):
 		t.Fatal("the sign-in never started")
 	}
-	return fake, ctrl, gateway, releaseSignIn
+	return pendingSignIn{gateway: gateway, release: releaseSignIn}
+}
+
+func namingAgentWhileSigningIn(t *testing.T) (*fakeTelegram, *fakeControl, *Gateway, func()) {
+	t.Helper()
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.live("tg-42", "42")
+	ctrl.live("tg-42-a-ana", "42@ana")
+	signing := signingInGateway(t, fake, ctrl, []contracts.AgentVoice{voiceOf(t, "ana", voiceToken, contracts.ReplyOnMention)}, nil)
+	return fake, ctrl, signing.gateway, signing.release
 }
 
 func awaitSettled(t *testing.T, gateway *Gateway, agent string) {
@@ -183,10 +283,21 @@ func awaitSettled(t *testing.T, gateway *Gateway, agent string) {
 	}
 }
 
+func awaitLog(t *testing.T, logs *syncBuffer, substring string, count int) {
+	t.Helper()
+	deadline := time.Now().Add(waitLimit)
+	for strings.Count(logs.String(), substring) < count {
+		if time.Now().After(deadline) {
+			t.Fatalf("the log never carried %d %q: %s", count, substring, logs.String())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestAMessageNamingAnAgentStillSigningInIsDroppedWithoutASessionOrHeader(t *testing.T) {
 	fake, ctrl, _, _ := namingAgentWhileSigningIn(t)
 
-	fake.push(privateText(1, 10, testOwner, "@ana review"), privateText(2, 10, testOwner, "marker"))
+	fake.push(privateText(1, 10, testOwner, "@ana review"), privateText(2, 11, testOwner, "marker"))
 	ctrl.waitFor(t, "the marker", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 1 })
 	if submitted := ctrl.snapshot(func(c *fakeControl) bool { return len(c.submitted["tg-42-a-ana"]) > 0 }); submitted {
 		t.Fatal("a message naming an agent still signing in reached its session")
@@ -201,18 +312,71 @@ func TestAMessageNamingAnAgentStillSigningInIsDroppedWithoutASessionOrHeader(t *
 func TestAMessageNamingAnAgentWhoseSignInFailedIsAnsweredByTheHouseUnderItsHeader(t *testing.T) {
 	fake, ctrl, gateway, releaseSignIn := namingAgentWhileSigningIn(t)
 
-	fake.push(privateText(1, 10, testOwner, "@ana review"), privateText(2, 10, testOwner, "marker"))
+	fake.push(privateText(1, 10, testOwner, "@ana review"), privateText(2, 11, testOwner, "marker"))
 	ctrl.waitFor(t, "the marker", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 1 })
 	releaseSignIn()
 	awaitSettled(t, gateway, "ana")
 
-	fake.push(privateText(3, 10, testOwner, "@ana review again"))
+	fake.push(privateText(3, 12, testOwner, "@ana review again"))
 	ctrl.waitFor(t, "the message after the failed sign-in", func(c *fakeControl) bool { return len(c.submitted["tg-42-a-ana"]) == 1 })
 	gateway.EmitTo(contracts.Conversation{Gateway: gatewayKind, ID: "42@ana"}, contracts.Event{T: eventReply, Done: true, Text: "hi"})
 
 	sent := decodeCall[tgctl.OutgoingMessage](t, fake.waitCalls(t, "sendMessage", 1)[0])
 	if sent.Text != "ana\nhi" {
 		t.Fatalf("house sent %q, want the answer under ana's header", sent.Text)
+	}
+}
+
+func pendingGroupGateway(t *testing.T, voices []contracts.AgentVoice) (*fakeTelegram, *fakeControl) {
+	t.Helper()
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.live("tg-42", "42")
+	ctrl.live("tg-g", "-100500")
+	ctrl.live("tg-g-a-ana", "-100500@ana")
+	ctrl.live("tg-g-a-bob", "-100500@bob")
+	signingInGateway(t, fake, ctrl, voices, map[string]string{chatsSetting: "-100500"})
+	return fake, ctrl
+}
+
+func TestAReadyTokenlessAgentAnswersAMessageThatAlsoNamesAPendingAgent(t *testing.T) {
+	fake, ctrl := pendingGroupGateway(t, []contracts.AgentVoice{
+		voiceOf(t, "ana", voiceToken, contracts.ReplyOnMention),
+		voiceOf(t, "bob", "", contracts.ReplyOnMention),
+	})
+
+	fake.push(inGroup(1, 10, testOwner, "@ana @bob hello"))
+	ctrl.waitFor(t, "bob answers the message that also names ana", func(c *fakeControl) bool { return len(c.submitted["tg-g-a-bob"]) == 1 })
+}
+
+func TestAnExplicitHouseMentionIsAnsweredInAChannelHeldByAPendingAgent(t *testing.T) {
+	fake, ctrl := pendingGroupGateway(t, []contracts.AgentVoice{
+		voiceOf(t, "ana", voiceToken, contracts.ReplyInChannels, "-100500"),
+	})
+
+	fake.push(inGroup(1, 10, testOwner, "@"+testBotName+" hello"))
+	ctrl.waitFor(t, "the house answers an explicit mention", func(c *fakeControl) bool { return len(c.submitted["tg-g"]) == 1 })
+}
+
+func TestAReadyChannelAgentCapturesAChatThatAPendingAgentAlsoHolds(t *testing.T) {
+	fake, ctrl := pendingGroupGateway(t, []contracts.AgentVoice{
+		voiceOf(t, "ana", voiceToken, contracts.ReplyInChannels, "-100500"),
+		voiceOf(t, "bob", "", contracts.ReplyInChannels, "-100500"),
+	})
+
+	fake.push(inGroup(1, 10, testOwner, "hello there"))
+	ctrl.waitFor(t, "bob captures the channel", func(c *fakeControl) bool { return len(c.submitted["tg-g-a-bob"]) == 1 })
+}
+
+func TestAPendingAgentWithReplyNeverHoldsNothingBack(t *testing.T) {
+	fake, ctrl := pendingGroupGateway(t, []contracts.AgentVoice{
+		voiceOf(t, "ana", voiceToken, contracts.ReplyNever, "-100500"),
+	})
+
+	fake.push(inGroup(1, 10, testOwner, "hello there"), privateText(2, 11, testOwner, "marker"))
+	ctrl.waitFor(t, "the marker", func(c *fakeControl) bool { return len(c.submitted["tg-42"]) == 1 })
+	if submitted := ctrl.snapshot(func(c *fakeControl) bool { return len(c.submitted["tg-g"]) > 0 }); submitted {
+		t.Fatal("a pending agent with reply never held a chat back")
 	}
 }
 
@@ -234,15 +398,10 @@ func TestTwoAgentsSharingATokenOrTheHouseBotSkipTheDuplicateOnce(t *testing.T) {
 	if !ok {
 		t.Fatalf("gateway is %T", set.Gateway)
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
-		defer cancel()
-		if err := gateway.Close(ctx); err != nil {
-			t.Errorf("close: %v", err)
-		}
-	})
+	closeAtCleanup(t, gateway)
 
-	gateway.BindSessionControl(ctrl)
+	go gateway.BindSessionControl(ctrl)
+	awaitLog(t, &logs, "agent bot skipped", 2)
 
 	if gateway.voices.hasOwn("ana") == gateway.voices.hasOwn("bob") {
 		t.Fatalf("two voices sharing one token: ana=%v bob=%v, want exactly one", gateway.voices.hasOwn("ana"), gateway.voices.hasOwn("bob"))
@@ -294,19 +453,11 @@ func TestASignInFailureNeverPutsTheTokenInTheLogs(t *testing.T) {
 		t.Fatalf("gateway is %T", set.Gateway)
 	}
 	gateway.dial = func(token string) bot { return tgctl.New(token, tgctl.WithBaseURL(unreachable.URL)) }
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
-		defer cancel()
-		if err := gateway.Close(ctx); err != nil {
-			t.Errorf("close: %v", err)
-		}
-	})
+	closeAtCleanup(t, gateway)
 
-	gateway.BindSessionControl(ctrl)
+	go gateway.BindSessionControl(ctrl)
+	awaitLog(t, &logs, "agent bot skipped", 1)
 
-	if !strings.Contains(logs.String(), "agent bot skipped") {
-		t.Fatalf("the failed sign-in was not logged: %q", logs.String())
-	}
 	for _, secret := range []string{refusedToken, "refused-token"} {
 		if strings.Contains(logs.String(), secret) {
 			t.Fatalf("the log carries the token %q: %s", secret, logs.String())

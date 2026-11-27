@@ -43,7 +43,7 @@ func namesMentioned(text, name string) bool {
 
 func tokenlessMention(voices []contracts.AgentVoice, bots *voiceBots, text string) (string, bool) {
 	for _, voice := range voices {
-		if voice.Reply == contracts.ReplyNever || !validAgent(voice.Agent) || bots.hasOwn(voice.Agent) {
+		if voice.Reply == contracts.ReplyNever || !validAgent(voice.Agent) || !bots.tokenlessReady(voice.Agent) {
 			continue
 		}
 		if namesMentioned(text, voice.Agent) {
@@ -55,10 +55,22 @@ func tokenlessMention(voices []contracts.AgentVoice, bots *voiceBots, text strin
 
 func tokenlessChannel(voices []contracts.AgentVoice, bots *voiceBots, conv chatRef) (string, bool) {
 	for _, voice := range voices {
-		if voice.Reply != contracts.ReplyInChannels || !validAgent(voice.Agent) || bots.hasOwn(voice.Agent) {
+		if voice.Reply != contracts.ReplyInChannels || !validAgent(voice.Agent) || !bots.tokenlessReady(voice.Agent) {
 			continue
 		}
 		if channelHas(voice.Channels, conv) {
+			return voice.Agent, true
+		}
+	}
+	return "", false
+}
+
+func pendingHold(voices []contracts.AgentVoice, bots *voiceBots, text string, conv chatRef) (string, bool) {
+	for _, voice := range voices {
+		if voice.Reply == contracts.ReplyNever || !bots.signingIn(voice.Agent) {
+			continue
+		}
+		if reachesVoice(voice, text, conv) {
 			return voice.Agent, true
 		}
 	}

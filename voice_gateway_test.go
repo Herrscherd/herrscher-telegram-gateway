@@ -269,7 +269,8 @@ func TestARejectedTokenChannelsAgentCapturesThroughTheHouse(t *testing.T) {
 	ctrl := newFakeControl()
 	ctrl.repos = []contracts.RepoRef{{Name: "herrscher", Local: true}}
 	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "ghost", refusedToken, contracts.ReplyInChannels, "-100500")}
-	startGateway(t, fake, ctrl, map[string]string{chatsSetting: "-100500"})
+	gateway := startGateway(t, fake, ctrl, map[string]string{chatsSetting: "-100500"})
+	awaitSettled(t, gateway, "ghost")
 
 	fake.push(inGroup(1, 10, testOwner, "a plain message"))
 

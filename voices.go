@@ -71,6 +71,14 @@ func (b *voiceBots) ownsLocked(botID int64) bool {
 	return false
 }
 
+func (b *voiceBots) tokenlessReady(agent string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, own := b.own[agent]
+	_, signing := b.signing[agent]
+	return !own && !signing
+}
+
 func (b *voiceBots) signingIn(agent string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()

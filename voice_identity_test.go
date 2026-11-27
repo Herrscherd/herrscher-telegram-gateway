@@ -19,6 +19,7 @@ func TestASinkOpenedBeforeItsVoiceBindsSpeaksThroughTheVoiceOnceBound(t *testing
 
 	gateway.EmitTo(conv, contracts.Event{T: eventHuman, Who: "ana", Text: "ask"})
 	gateway.BindSessionControl(ctrl)
+	fake.waitVoicePoll(t)
 	gateway.EmitTo(conv, contracts.Event{T: eventReply, Done: true, Text: "hi"})
 
 	fake.waitCalls(t, "sendMessage", 1)

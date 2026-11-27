@@ -89,12 +89,16 @@ reads that list for each message.
   and the sign-ins run in parallel, so a token that hangs delays only its own
   agent. A token that cannot sign in is logged without the token, skipped, and
   its agent falls back to the house bot under its header.
-- A message that names an agent still signing in (`@agent` in the text, or a
-  `channels` chat of that agent) is dropped during the sign-in window, which
-  lasts at most 10 seconds, and logged with the agent's name, never its token.
-  The house never answers it under that agent's header. Once the sign-in
-  settles, the agent's own bot handles the later messages, or, if the sign-in
-  failed, the house answers for that agent under its header.
+- An agent still signing in holds the messages that name it (`@agent` in the
+  text, or a `channels` chat of that agent) for at most 10 seconds, the sign-in
+  window, and each held message is logged with the agent's name, never its
+  token. A token-less agent that the message also names, or that captures the
+  chat, answers first, so a ready agent is never held back. The hold applies
+  only when the house bot is not explicitly mentioned, and an agent whose reply
+  rule is `never` holds nothing. The house never answers a held message under
+  that agent's header. Once the sign-in settles, the agent's own bot handles the
+  later messages, or, if the sign-in failed, the house answers for that agent
+  under its header.
 - A text `@agent` that is not a real mention of the agent's bot is not seen by
   that bot under privacy mode, and once the agent has its own bot the house
   never answers it under that agent's header. To reach an agent with its own

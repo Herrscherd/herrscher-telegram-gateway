@@ -184,10 +184,6 @@ func (r *router) heldMessages() int {
 func (r *router) handle(ctx context.Context, from origin, msg *tgctl.Message, members []*tgctl.Message) {
 	ctrl := r.ctrl()
 	voices := voicesOf(ctrl)
-	if agent, signing := r.signingVoiceReached(from, msg, voices); signing {
-		r.log.Info("message dropped, its agent is still signing in", "agent", agent)
-		return
-	}
 	conv, text, addressed := r.route(from, msg, voices)
 	if !addressed {
 		return
@@ -224,23 +220,6 @@ func (r *router) handle(ctx context.Context, from origin, msg *tgctl.Message, me
 		return
 	}
 	r.askRepo(ctx, ctrl, conv, msg.From.ID, inbound)
-}
-
-func (r *router) signingVoiceReached(from origin, msg *tgctl.Message, voices []contracts.AgentVoice) (string, bool) {
-	if !from.house() {
-		return "", false
-	}
-	raw, _ := textOf(msg)
-	base := conversationOf(msg)
-	for _, voice := range voices {
-		if voice.Reply == contracts.ReplyNever || !reachesVoice(voice, raw, base) {
-			continue
-		}
-		if r.voices.signingIn(voice.Agent) {
-			return voice.Agent, true
-		}
-	}
-	return "", false
 }
 
 func reachesVoice(voice contracts.AgentVoice, raw string, base chatRef) bool {
@@ -295,14 +274,20 @@ func (r *router) routeHouse(from origin, msg *tgctl.Message, base chatRef, voice
 	if !houseMentioned && r.voices.mentionsAgentBot(raw, entities) {
 		return address{}, "", false
 	}
-	if agent, ok := tokenlessMention(voices, r.voices, raw); ok && !houseMentioned {
-		return address{chatRef: base, agent: agent}, plainText(msg), true
+	if !houseMentioned {
+		if agent, ok := tokenlessMention(voices, r.voices, raw); ok {
+			return address{chatRef: base, agent: agent}, plainText(msg), true
+		}
+		if agent, ok := tokenlessChannel(voices, r.voices, base); ok {
+			return address{chatRef: base, agent: agent}, plainText(msg), true
+		}
+		if agent, held := pendingHold(voices, r.voices, raw, base); held {
+			r.log.Info("message dropped, its agent is still signing in", "agent", agent)
+			return address{}, "", false
+		}
 	}
 	if text, addressed := addressedTo(from.self, msg); addressed {
 		return address{chatRef: base}, text, true
-	}
-	if agent, ok := tokenlessChannel(voices, r.voices, base); ok {
-		return address{chatRef: base, agent: agent}, plainText(msg), true
 	}
 	return address{}, "", false
 }
