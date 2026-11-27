@@ -183,3 +183,23 @@ func TestTheAckIsClearedWhenTheTurnIsAbandonedBeforeTheAcceptedJobRuns(t *testin
 		t.Fatalf("the ack after an abandoned turn was not cleared: %+v", swap)
 	}
 }
+
+func TestTheTurnAfterAnEarlyDoneGetsItsAck(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := newFakeControl()
+	ctrl.live("tg-42", "42")
+	gateway := startGateway(t, fake, ctrl, nil)
+	conv := contracts.Conversation{Gateway: gatewayKind, ID: "42"}
+
+	fake.push(privateText(1, 10, testOwner, "go"))
+	fake.waitCalls(t, "setMessageReaction", 1)
+	gateway.EmitTo(conv, contracts.Event{T: eventReply, Done: true, Text: "stale"})
+	settle(t, gateway, conv.ID)
+	gateway.EmitTo(conv, humanAsking("go"))
+	gateway.EmitTo(conv, contracts.Event{T: eventChunk, Text: "working"})
+	settle(t, gateway, conv.ID)
+
+	if got := lastReaction(t, fake); got.MessageID != 10 || len(got.Reaction) != 1 || got.Reaction[0].Emoji != ackEmoji {
+		t.Fatalf("the turn for prompt 10 runs with reaction %+v, want %s", got, ackEmoji)
+	}
+}

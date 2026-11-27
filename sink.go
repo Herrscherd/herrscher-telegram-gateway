@@ -199,6 +199,9 @@ func (s *sink) begin(ctx context.Context, author, text string) {
 		return
 	}
 	s.turn.prompt = claimed
+	if _, waiting := s.awaitingAck[claimed.note]; !waiting {
+		s.hold(ctx, &s.turn.prompt)
+	}
 }
 
 func (s *sink) stoppedDraft(draftID int64) bool {
