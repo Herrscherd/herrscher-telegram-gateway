@@ -11,6 +11,8 @@ import (
 
 const (
 	voiceSeparator   = "@"
+	agentMark        = "-a-"
+	hashedMark       = "a-"
 	sessionNameMax   = 64
 	sessionHashChars = 16
 	agentNamePattern = `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`
@@ -56,10 +58,10 @@ func (a address) sessionName() string {
 	if a.agent == "" {
 		return base
 	}
-	name := base + "-" + a.agent
+	name := base + agentMark + a.agent
 	if len(name) <= sessionNameMax {
 		return name
 	}
 	sum := sha256.Sum256([]byte(a.String()))
-	return sessionPrefix + hex.EncodeToString(sum[:])[:sessionHashChars]
+	return sessionPrefix + hashedMark + hex.EncodeToString(sum[:])[:sessionHashChars]
 }

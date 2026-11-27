@@ -48,7 +48,7 @@ func TestAVoiceWhoseTokenCannotSignInSpeaksThroughTheHouseUnderItsHeader(t *test
 func TestAStopInOnePrivateChatInterruptsOnlyTheTokenlessVoiceThatDrafted(t *testing.T) {
 	fake := newFakeTelegram(t)
 	ctrl := newFakeControl()
-	ctrl.live("tg-42-ana", "42@ana")
+	ctrl.live("tg-42-a-ana", "42@ana")
 	ctrl.live("tg-42-bob", "42@bob")
 	ctrl.voices = []contracts.AgentVoice{
 		voiceOf(t, "ana", "", contracts.ReplyOnMention),
@@ -67,7 +67,7 @@ func TestAStopInOnePrivateChatInterruptsOnlyTheTokenlessVoiceThatDrafted(t *test
 	flushLane(t, gateway, ana.ID)
 	flushLane(t, gateway, bob.ID)
 
-	if got := ctrl.interrupted; !slices.Equal(got, []string{"tg-42-ana"}) {
+	if got := ctrl.interrupted; !slices.Equal(got, []string{"tg-42-a-ana"}) {
 		t.Fatalf("interrupted %v, want only the ana session", got)
 	}
 }

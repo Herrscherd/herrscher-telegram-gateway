@@ -77,13 +77,13 @@ func TestAVoiceWithItsOwnTokenReceivesItsOwnPrivateMessages(t *testing.T) {
 	fake := newFakeTelegram(t)
 	ctrl := newFakeControl()
 	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "ana", voiceToken, contracts.ReplyOnMention)}
-	ctrl.live("tg-42-ana", "42@ana")
+	ctrl.live("tg-42-a-ana", "42@ana")
 	startGateway(t, fake, ctrl, nil)
 
 	fake.pushTo(voiceToken, privateText(1, 10, testOwner, "hello ana"))
 
-	ctrl.waitFor(t, "the voice message", func(c *fakeControl) bool { return len(c.submitted["tg-42-ana"]) == 1 })
-	if got := ctrl.submitted["tg-42-ana"][0]; got.Conversation.ID != "42@ana" || got.Text != "hello ana" {
+	ctrl.waitFor(t, "the voice message", func(c *fakeControl) bool { return len(c.submitted["tg-42-a-ana"]) == 1 })
+	if got := ctrl.submitted["tg-42-a-ana"][0]; got.Conversation.ID != "42@ana" || got.Text != "hello ana" {
 		t.Fatalf("inbound = %+v", got)
 	}
 }
@@ -99,7 +99,7 @@ func TestAFailingAgentTokenIsSkippedAndItsPollNeverRuns(t *testing.T) {
 
 	fake.waitSignIn(t, refusedToken)
 	fake.pushTo(voiceToken, privateText(1, 10, testOwner, "marker"))
-	ctrl.live("tg-42-ana", "42@ana")
+	ctrl.live("tg-42-a-ana", "42@ana")
 	fake.waitVoicePoll(t)
 	if polls := fake.pollsWith(refusedToken); polls != 0 {
 		t.Fatalf("a voice with a refused token was polled %d times", polls)
@@ -116,7 +116,7 @@ func TestATextMentionOfATokenlessAgentRoutesToItsSessionAsThatAgent(t *testing.T
 	fake.push(inGroup(1, 10, testOwner, "@ana please review"))
 
 	ctrl.waitFor(t, "the created session", func(c *fakeControl) bool { return len(c.created) == 1 })
-	if got := ctrl.created[0]; got.Agent != "ana" || got.ChannelID != "-100500@ana" || got.Name != "tg-n100500-ana" {
+	if got := ctrl.created[0]; got.Agent != "ana" || got.ChannelID != "-100500@ana" || got.Name != "tg-n100500-a-ana" {
 		t.Fatalf("created = %+v", got)
 	}
 }
@@ -209,7 +209,7 @@ func TestAnAgentBotAuthoredMessageNeverReachesTheRouter(t *testing.T) {
 func TestAVoiceKeyboardIsPostedByTheHouseAndItsPressRoutesToTheVoice(t *testing.T) {
 	fake := newFakeTelegram(t)
 	ctrl := newFakeControl()
-	ctrl.live("tg-n100500-ana", "-100500@ana")
+	ctrl.live("tg-n100500-a-ana", "-100500@ana")
 	ctrl.voices = []contracts.AgentVoice{voiceOf(t, "ana", voiceToken, contracts.ReplyOnMention)}
 	gateway := startGateway(t, fake, ctrl, nil)
 
@@ -228,7 +228,7 @@ func TestAVoiceKeyboardIsPostedByTheHouseAndItsPressRoutesToTheVoice(t *testing.
 	}})
 
 	ctrl.waitFor(t, "the pick", func(c *fakeControl) bool { return len(c.picks) == 1 })
-	if got := ctrl.picks[0]; got != "tg-n100500-ana=v" {
+	if got := ctrl.picks[0]; got != "tg-n100500-a-ana=v" {
 		t.Fatalf("pick = %q", got)
 	}
 }
