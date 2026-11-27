@@ -182,11 +182,13 @@ func (r *router) heldMessages() int {
 
 func (r *router) handle(ctx context.Context, from origin, msg *tgctl.Message, members []*tgctl.Message) {
 	ctrl := r.ctrl()
-	voices := voicesOf(ctrl)
-	conv, text, addressed := r.route(from, msg, voices)
-	if !addressed {
-		return
+	for _, target := range r.route(from, msg, voicesOf(ctrl)) {
+		r.answer(ctx, from, ctrl, msg, members, target)
 	}
+}
+
+func (r *router) answer(ctx context.Context, from origin, ctrl contracts.SessionControl, msg *tgctl.Message, members []*tgctl.Message, target addressee) {
+	conv, text := target.conv, target.text
 	if ctrl == nil {
 		r.post(ctx, conv, r.msgs.say(notReadyKey, nil))
 		return
@@ -235,7 +237,12 @@ func voicesOf(ctrl contracts.SessionControl) []contracts.AgentVoice {
 	return directoryVoices(ctrl)
 }
 
-func (r *router) route(from origin, msg *tgctl.Message, voices []contracts.AgentVoice) (address, string, bool) {
+type addressee struct {
+	conv address
+	text string
+}
+
+func (r *router) route(from origin, msg *tgctl.Message, voices []contracts.AgentVoice) []addressee {
 	base := conversationOf(msg)
 	if !from.house() {
 		return r.routeOwnVoice(from, msg, base, voices)

@@ -43,7 +43,7 @@ func TestAChannelsAgentWithItsOwnBotLeavesAMessageNamingAnotherAddressee(t *test
 	}
 	for name, msg := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, _, addressed := router.route(from, &msg, voices); addressed {
+			if len(router.route(from, &msg, voices)) > 0 {
 				t.Fatalf("ana captured %q, which names another addressee", msg.Text)
 			}
 		})
@@ -63,9 +63,9 @@ func TestAChannelsAgentWithItsOwnBotCapturesAPlainMessageOfItsChat(t *testing.T)
 	router, voices, from := voiceRouterFixture(t)
 	msg := groupText("a plain message")
 
-	conv, text, addressed := router.route(from, &msg, voices)
-	if !addressed || conv.agent != "ana" || text != "a plain message" {
-		t.Fatalf("route = %+v %q %v", conv, text, addressed)
+	targets := router.route(from, &msg, voices)
+	if len(targets) != 1 || targets[0].conv.agent != "ana" || targets[0].text != "a plain message" {
+		t.Fatalf("route = %+v", targets)
 	}
 }
 
@@ -73,9 +73,9 @@ func TestAnExplicitMentionOfTheChannelsAgentItselfIsStillRouted(t *testing.T) {
 	router, voices, from := voiceRouterFixture(t)
 	msg := groupText("@"+voiceBotName+" take this", mentionOf(voiceBotName))
 
-	conv, _, addressed := router.route(from, &msg, voices)
-	if !addressed || conv.agent != "ana" {
-		t.Fatalf("route = %+v addressed=%v", conv, addressed)
+	targets := router.route(from, &msg, voices)
+	if len(targets) != 1 || targets[0].conv.agent != "ana" {
+		t.Fatalf("route = %+v", targets)
 	}
 }
 
@@ -95,9 +95,9 @@ func TestAReplyToTheHouseIsCapturedByAReadyTokenlessChannelsAgentAsOnDiscord(t *
 	router, house := houseRouter()
 	msg := replyToHouse("a reply to the house")
 
-	conv, _, addressed := router.route(house, &msg, voices)
-	if !addressed || conv.agent != "bob" {
-		t.Fatalf("route = %+v addressed=%v, want the channels agent bob to capture the reply", conv, addressed)
+	targets := router.route(house, &msg, voices)
+	if len(targets) != 1 || targets[0].conv.agent != "bob" {
+		t.Fatalf("route = %+v, want the channels agent bob to capture the reply alone", targets)
 	}
 }
 
@@ -106,8 +106,8 @@ func TestAReplyToATokenlessVoicesHeaderGoesToTheHouseAsOnDiscord(t *testing.T) {
 	router, house := houseRouter()
 	msg := replyToHouse("and the details?")
 
-	conv, text, addressed := router.route(house, &msg, voices)
-	if !addressed || conv.agent != "" || text != "and the details?" {
-		t.Fatalf("route = %+v %q addressed=%v, want the house to answer a reply to bob's header", conv, text, addressed)
+	targets := router.route(house, &msg, voices)
+	if len(targets) != 1 || targets[0].conv.agent != "" || targets[0].text != "and the details?" {
+		t.Fatalf("route = %+v, want the house to answer a reply to bob's header", targets)
 	}
 }

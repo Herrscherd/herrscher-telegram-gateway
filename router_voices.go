@@ -78,19 +78,19 @@ func pendingHold(voices []contracts.AgentVoice, bots *voiceBots, text string, co
 	return "", false
 }
 
-func (r *router) routeOwnVoice(from origin, msg *tgctl.Message, base chatRef, voices []contracts.AgentVoice) (address, string, bool) {
+func (r *router) routeOwnVoice(from origin, msg *tgctl.Message, base chatRef, voices []contracts.AgentVoice) []addressee {
 	voice, ok := voiceNamed(voices, from.agent)
 	if !ok || voice.Reply == contracts.ReplyNever {
-		return address{}, "", false
+		return nil
 	}
 	conv := address{chatRef: base, agent: from.agent}
 	if text, addressed := addressedTo(from.self, msg); addressed {
-		return conv, text, true
+		return []addressee{{conv: conv, text: text}}
 	}
 	if voice.Reply == contracts.ReplyInChannels && channelHas(voice.Channels, base) && !r.namesOtherAddressee(from, msg, voices) {
-		return conv, plainText(msg), true
+		return []addressee{{conv: conv, text: plainText(msg)}}
 	}
-	return address{}, "", false
+	return nil
 }
 
 func (r *router) namesOtherAddressee(from origin, msg *tgctl.Message, voices []contracts.AgentVoice) bool {
@@ -102,26 +102,33 @@ func (r *router) namesOtherAddressee(from origin, msg *tgctl.Message, voices []c
 	return named
 }
 
-func (r *router) routeHouse(from origin, msg *tgctl.Message, base chatRef, voices []contracts.AgentVoice) (address, string, bool) {
+func (r *router) routeHouse(from origin, msg *tgctl.Message, base chatRef, voices []contracts.AgentVoice) []addressee {
 	raw, entities := textOf(msg)
 	houseMentioned := mentionedBy(raw, entities, from.self)
 	if !houseMentioned && r.voices.mentionsAgentBot(raw, entities) {
-		return address{}, "", false
+		return nil
 	}
 	if !houseMentioned {
 		if agent, ok := tokenlessMention(voices, r.voices, raw); ok {
-			return address{chatRef: base, agent: agent}, plainText(msg), true
+			return []addressee{{conv: address{chatRef: base, agent: agent}, text: plainText(msg)}}
 		}
-		if agent, ok := tokenlessChannel(voices, r.voices, base); ok {
-			return address{chatRef: base, agent: agent}, plainText(msg), true
+	}
+	var targets []addressee
+	if agent, ok := tokenlessChannel(voices, r.voices, base); ok {
+		capture := addressee{conv: address{chatRef: base, agent: agent}, text: plainText(msg)}
+		if !houseMentioned {
+			return []addressee{capture}
 		}
+		targets = append(targets, capture)
+	}
+	if !houseMentioned {
 		if agent, held := pendingHold(voices, r.voices, raw, base); held {
 			r.log.Info("message dropped, its agent is still signing in", "agent", agent)
-			return address{}, "", false
+			return nil
 		}
 	}
 	if text, addressed := addressedTo(from.self, msg); addressed {
-		return address{chatRef: base}, text, true
+		targets = append(targets, addressee{conv: address{chatRef: base}, text: text})
 	}
-	return address{}, "", false
+	return targets
 }
