@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	contracts "github.com/Herrscherd/herrscher-contracts"
+	"github.com/Herrscherd/tgctl"
 )
 
 const (
@@ -24,6 +25,8 @@ const (
 	fileNameMaxBytes   = 120
 	extensionMaxBytes  = 16
 )
+
+var errUnreadableType = errors.New("file is not a type the agent can read")
 
 type stager struct {
 	api  bot
@@ -44,7 +47,7 @@ func (f incomingFile) readable() bool {
 	return contracts.ModelReadable(contracts.Attachment{Filename: f.name, ContentType: f.contentType})
 }
 
-func filesOf(msg *message) []incomingFile {
+func filesOf(msg *tgctl.Message) []incomingFile {
 	var files []incomingFile
 	if msg.Document != nil {
 		files = append(files, incomingFile{
@@ -58,9 +61,9 @@ func filesOf(msg *message) []incomingFile {
 	return files
 }
 
-func largestPhoto(sizes []photoSize) (photoSize, bool) {
+func largestPhoto(sizes []tgctl.PhotoSize) (tgctl.PhotoSize, bool) {
 	if len(sizes) == 0 {
-		return photoSize{}, false
+		return tgctl.PhotoSize{}, false
 	}
 	best := sizes[0]
 	for _, size := range sizes[1:] {
@@ -71,7 +74,7 @@ func largestPhoto(sizes []photoSize) (photoSize, bool) {
 	return best, true
 }
 
-func (s stager) stage(ctx context.Context, conv chatRef, msg *message) []contracts.Attachment {
+func (s stager) stage(ctx context.Context, conv chatRef, msg *tgctl.Message) []contracts.Attachment {
 	var staged []contracts.Attachment
 	for index, file := range filesOf(msg) {
 		attachment, err := s.stageOne(ctx, conv, msg.MessageID, index, file)
@@ -89,14 +92,14 @@ func (s stager) stageOne(ctx context.Context, conv chatRef, messageID int64, ind
 		return contracts.Attachment{}, errUnreadableType
 	}
 	if file.size > attachmentMaxBytes {
-		return contracts.Attachment{}, errFileTooLarge
+		return contracts.Attachment{}, tgctl.ErrFileTooLarge
 	}
-	remote, err := s.api.getFile(ctx, file.fileID)
+	remote, err := s.api.GetFile(ctx, file.fileID)
 	if err != nil {
 		return contracts.Attachment{}, err
 	}
 	if remote.FileSize > attachmentMaxBytes {
-		return contracts.Attachment{}, errFileTooLarge
+		return contracts.Attachment{}, tgctl.ErrFileTooLarge
 	}
 	dir := filepath.Join(s.root, gatewayKind, conv.sessionName())
 	if mkdirErr := os.MkdirAll(dir, stagingDirPerm); mkdirErr != nil {
@@ -117,7 +120,7 @@ func (s stager) write(ctx context.Context, target, remotePath string) (int64, er
 	if err != nil {
 		return 0, fmt.Errorf("create the staged file: %w", err)
 	}
-	downloadErr := s.api.download(ctx, remotePath, attachmentMaxBytes, out)
+	downloadErr := s.api.Download(ctx, remotePath, attachmentMaxBytes, out)
 	err = errors.Join(downloadErr, out.Close())
 	if err != nil {
 		return 0, errors.Join(err, os.Remove(target))

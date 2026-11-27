@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/Herrscherd/tgctl"
 )
 
 const (
@@ -87,10 +89,10 @@ func parseCallback(data string) (callback, bool) {
 	return callback{kind: parts[0], token: parts[1], index: index}, true
 }
 
-func keyboard(kind, token string, labels []string) *inlineKeyboard {
-	rows := make([][]inlineButton, 0, len(labels))
+func keyboard(kind, token string, labels []string) *tgctl.InlineKeyboardMarkup {
+	rows := make([][]tgctl.InlineKeyboardButton, 0, len(labels))
 	for index, label := range labels {
-		rows = append(rows, []inlineButton{{Text: label, CallbackData: callbackData(kind, token, index)}})
+		rows = append(rows, []tgctl.InlineKeyboardButton{{Text: label, CallbackData: callbackData(kind, token, index)}})
 	}
-	return &inlineKeyboard{Rows: rows}
+	return &tgctl.InlineKeyboardMarkup{Rows: rows}
 }

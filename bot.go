@@ -3,19 +3,22 @@ package telegram
 import (
 	"context"
 	"io"
+	"time"
+
+	"github.com/Herrscherd/tgctl"
 )
 
 type bot interface {
-	getMe(ctx context.Context) (botIdentity, error)
-	getUpdates(ctx context.Context, offset int64) ([]update, error)
-	sendMessage(ctx context.Context, out outgoing) (message, error)
-	editMessageText(ctx context.Context, edit textEdit) error
-	editMessageReplyMarkup(ctx context.Context, edit markupEdit) error
-	sendMessageDraft(ctx context.Context, next draft) error
-	setMessageReaction(ctx context.Context, chatID, messageID int64, emoji string) error
-	answerCallbackQuery(ctx context.Context, answer callbackAnswer) error
-	getFile(ctx context.Context, fileID string) (remoteFile, error)
-	download(ctx context.Context, filePath string, limit int64, dst io.Writer) error
+	GetMe(ctx context.Context) (tgctl.User, error)
+	GetUpdates(ctx context.Context, offset int64, timeout ...time.Duration) ([]tgctl.Update, error)
+	SendMessage(ctx context.Context, message tgctl.OutgoingMessage) (tgctl.Message, error)
+	EditMessageText(ctx context.Context, edit tgctl.EditMessageText) error
+	EditMessageReplyMarkup(ctx context.Context, edit tgctl.EditMessageReplyMarkup) error
+	SendMessageDraft(ctx context.Context, draft tgctl.MessageDraft) error
+	SetMessageReaction(ctx context.Context, chatID, messageID int64, emoji string) error
+	AnswerCallbackQuery(ctx context.Context, answer tgctl.CallbackAnswer) error
+	GetFile(ctx context.Context, fileID string) (tgctl.File, error)
+	Download(ctx context.Context, filePath string, limit int64, dst io.Writer) error
 }
 
-var _ bot = (*botAPI)(nil)
+var _ bot = (*tgctl.Client)(nil)

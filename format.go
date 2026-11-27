@@ -5,6 +5,8 @@ import (
 	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/Herrscherd/tgctl"
 )
 
 const (
@@ -25,13 +27,13 @@ const (
 
 type formatted struct {
 	text     string
-	entities []entity
+	entities []tgctl.Entity
 }
 
 type formatter struct {
 	pieces   []string
 	units    int
-	entities []entity
+	entities []tgctl.Entity
 }
 
 func unitsOf(text string) int { return len(utf16.Encode([]rune(text))) }
@@ -41,7 +43,7 @@ func (f *formatter) write(text string) {
 	f.units += unitsOf(text)
 }
 
-func (f *formatter) span(kind, text string, extra entity) {
+func (f *formatter) span(kind, text string, extra tgctl.Entity) {
 	if text == "" {
 		return
 	}
@@ -78,13 +80,13 @@ func (f *formatter) codeBlock(lines []string, start int, language string) int {
 	for end < len(lines) && strings.TrimSpace(lines[end]) != fence {
 		end++
 	}
-	f.span(entityPre, strings.Join(lines[start:end], "\n"), entity{Language: language})
+	f.span(entityPre, strings.Join(lines[start:end], "\n"), tgctl.Entity{Language: language})
 	return end
 }
 
 func (f *formatter) line(line string) {
 	if heading, ok := headingText(line); ok {
-		f.span(entityBold, heading, entity{})
+		f.span(entityBold, heading, tgctl.Entity{})
 		return
 	}
 	f.inline(line)
@@ -154,7 +156,7 @@ func (f *formatter) marked(text string, insideWord bool) int {
 		if mark.kind != entityCode && wordBoundaryNeeded(mark.open) && (insideWord || !boundaryAfter(rest[closing+len(mark.open):])) {
 			continue
 		}
-		f.span(mark.kind, rest[:closing], entity{})
+		f.span(mark.kind, rest[:closing], tgctl.Entity{})
 		return len(mark.open) + closing + len(mark.open)
 	}
 	return 0
@@ -190,7 +192,7 @@ func (f *formatter) link(text string) int {
 	if !closed || !webURL(target) {
 		return 0
 	}
-	f.span(entityTextLink, label, entity{URL: target})
+	f.span(entityTextLink, label, tgctl.Entity{URL: target})
 	return 1 + len(label) + len("](") + len(target) + 1
 }
 
@@ -235,8 +237,8 @@ func cutPoint(units []uint16, start, limit int) int {
 	return end
 }
 
-func clipEntities(all []entity, start, end int) []entity {
-	var clipped []entity
+func clipEntities(all []tgctl.Entity, start, end int) []tgctl.Entity {
+	var clipped []tgctl.Entity
 	for _, candidate := range all {
 		from := max(candidate.Offset, start)
 		until := min(candidate.Offset+candidate.Length, end)

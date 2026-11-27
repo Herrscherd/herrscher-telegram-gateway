@@ -6,7 +6,10 @@ import (
 	"log/slog"
 
 	contracts "github.com/Herrscherd/herrscher-contracts"
+	"github.com/Herrscherd/tgctl"
 )
+
+const telegramAPIBase = "https://api.telegram.org"
 
 func init() {
 	contracts.Register(contracts.Plugin{
@@ -42,8 +45,8 @@ func newGatewaySet(ctx context.Context, cfg contracts.PluginConfig, base string,
 	if err != nil {
 		return contracts.GatewaySet{}, err
 	}
-	api := newBotAPI(base, set.token)
-	self, err := api.getMe(ctx)
+	api := tgctl.New(set.token, tgctl.WithBaseURL(base))
+	self, err := api.GetMe(ctx)
 	if err != nil {
 		return contracts.GatewaySet{}, fmt.Errorf("telegram gateway: resolve the bot identity: %w", err)
 	}

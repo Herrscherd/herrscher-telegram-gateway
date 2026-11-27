@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	contracts "github.com/Herrscherd/herrscher-contracts"
 	"github.com/Herrscherd/herrscher-contracts/i18n"
+	"github.com/Herrscherd/tgctl"
 )
 
 const (
@@ -63,7 +63,7 @@ type Gateway struct {
 	poller  sync.WaitGroup
 }
 
-func newGateway(ctx context.Context, api bot, set settings, self botIdentity, msgs messages, log *slog.Logger) *Gateway {
+func newGateway(ctx context.Context, api bot, set settings, self tgctl.User, msgs messages, log *slog.Logger) *Gateway {
 	run, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	life := func() context.Context { return run }
 	gateway := &Gateway{
@@ -142,12 +142,12 @@ func (g *Gateway) poll(ctx context.Context) {
 	offset := int64(0)
 	backoff := pollBackoffFloor
 	for ctx.Err() == nil {
-		updates, err := g.api.getUpdates(ctx, offset)
+		updates, err := g.api.GetUpdates(ctx, offset)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			wait, limited := retryAfter(err)
+			wait, limited := tgctl.RetryAfter(err)
 			if !limited {
 				wait = backoff
 				backoff = min(backoff*backoffGrowth, pollBackoffCeiling)
@@ -166,7 +166,7 @@ func (g *Gateway) poll(ctx context.Context) {
 }
 
 func (g *Gateway) notePollFailure(err error, wait time.Duration) {
-	if failure, ok := errors.AsType[*apiError](err); ok && failure.Code == http.StatusConflict {
+	if failure, ok := errors.AsType[*tgctl.APIError](err); ok && errors.Is(err, tgctl.ErrConflict) {
 		cause := errOtherPoller
 		if strings.Contains(strings.ToLower(failure.Description), webhookWord) {
 			cause = errWebhookSet
@@ -190,11 +190,11 @@ func (g *Gateway) currentFault() error {
 	return g.fault
 }
 
-func (g *Gateway) dispatch(ctx context.Context, next update) {
+func (g *Gateway) dispatch(ctx context.Context, next tgctl.Update) {
 	if !g.router.accepts(next) {
 		return
 	}
-	if stopped := next.StoppedGeneration; stopped != nil {
+	if stopped := next.StoppedMessageGeneration; stopped != nil {
 		g.onStopped(ctx, stopped)
 		return
 	}
@@ -216,7 +216,7 @@ func (g *Gateway) sinkFor(conv chatRef) *sink {
 	return found
 }
 
-func (g *Gateway) onStopped(ctx context.Context, stopped *generationStopped) {
+func (g *Gateway) onStopped(ctx context.Context, stopped *tgctl.GenerationStopped) {
 	conv := chatRef{chat: stopped.Chat.ID, thread: stopped.ThreadID}
 	target := g.sinkFor(conv)
 	g.lanes.push(ctx, outboundLane+conv.String(), func(context.Context) {
@@ -281,11 +281,11 @@ func (g *Gateway) send(ctx context.Context, conv contracts.Conversation, replyTo
 	}
 	first := contracts.MessageID("")
 	for index, part := range text.split(messageMaxUnits) {
-		out := outgoing{ChatID: ref.chat, ThreadID: ref.thread, Text: part.text, Entities: part.entities, LinkPreview: noPreview()}
+		out := tgctl.OutgoingMessage{ChatID: ref.chat, ThreadID: ref.thread, Text: part.text, Entities: part.entities, LinkPreview: noPreview()}
 		if index == 0 && replyTo != 0 {
-			out.ReplyParameters = &replyParameters{MessageID: replyTo, AllowSendingWithoutReply: true}
+			out.ReplyParameters = &tgctl.ReplyParameters{MessageID: replyTo, AllowSendingWithoutReply: true}
 		}
-		sent, err := g.api.sendMessage(ctx, out)
+		sent, err := g.api.SendMessage(ctx, out)
 		if err != nil {
 			return first, err
 		}
@@ -311,7 +311,7 @@ func (g *Gateway) React(ctx context.Context, conv contracts.Conversation, msg co
 	if !ok {
 		return fmt.Errorf("%w: %q", errUnsupported, emoji)
 	}
-	return g.api.setMessageReaction(ctx, ref.chat, target, offered)
+	return g.api.SetMessageReaction(ctx, ref.chat, target, offered)
 }
 
 // Menu sends prompt in reply to replyTo with one button per choice. A press is
@@ -330,11 +330,11 @@ func (g *Gateway) Menu(ctx context.Context, conv contracts.Conversation, replyTo
 	}
 	token := g.menus.put(ref.String(), values, labels)
 	part := plain(prompt).tail(messageMaxUnits)
-	out := outgoing{ChatID: ref.chat, ThreadID: ref.thread, Text: part.text, ReplyMarkup: keyboard(choicePrefix, token, labels), LinkPreview: noPreview()}
+	out := tgctl.OutgoingMessage{ChatID: ref.chat, ThreadID: ref.thread, Text: part.text, ReplyMarkup: keyboard(choicePrefix, token, labels), LinkPreview: noPreview()}
 	if target, parseErr := parseMessageID(string(replyTo)); parseErr == nil {
-		out.ReplyParameters = &replyParameters{MessageID: target, AllowSendingWithoutReply: true}
+		out.ReplyParameters = &tgctl.ReplyParameters{MessageID: target, AllowSendingWithoutReply: true}
 	}
-	_, err = g.api.sendMessage(ctx, out)
+	_, err = g.api.SendMessage(ctx, out)
 	return err
 }
 
@@ -364,7 +364,7 @@ func (g *Gateway) Probe(ctx context.Context) (int64, error) {
 		return 0, fault
 	}
 	start := g.now()
-	if _, err := g.api.getMe(ctx); err != nil {
+	if _, err := g.api.GetMe(ctx); err != nil {
 		return 0, err
 	}
 	return g.now().Sub(start).Milliseconds(), nil

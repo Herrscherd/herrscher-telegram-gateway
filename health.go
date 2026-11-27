@@ -7,6 +7,7 @@ import (
 	"time"
 
 	contracts "github.com/Herrscherd/herrscher-contracts"
+	"github.com/Herrscherd/tgctl"
 )
 
 const (
@@ -37,7 +38,7 @@ func (p healthProbe) check(ctx context.Context, access contracts.ProbeAccess) co
 		}
 	}
 	start := time.Now()
-	identity, err := newBotAPI(p.base, token).getMe(ctx)
+	identity, err := tgctl.New(token, tgctl.WithBaseURL(p.base)).GetMe(ctx)
 	latency := time.Since(start)
 	if err != nil {
 		return reportFailure(ctx, err, latency)
@@ -63,7 +64,7 @@ func probeToken(access contracts.ProbeAccess) string {
 }
 
 func reportFailure(ctx context.Context, err error, latency time.Duration) contracts.ProbeReport {
-	if failure, ok := errors.AsType[*apiError](err); ok {
+	if failure, ok := errors.AsType[*tgctl.APIError](err); ok {
 		switch failure.Code {
 		case http.StatusUnauthorized, http.StatusNotFound:
 			return contracts.ProbeReport{State: contracts.HealthDown, Latency: latency, Detail: contracts.Notice{Code: contracts.CodeHealthCredentialsRefused}}
@@ -77,7 +78,7 @@ func reportFailure(ctx context.Context, err error, latency time.Duration) contra
 		return unreachable(reasonTimeout, latency)
 	case errors.Is(ctx.Err(), context.Canceled), errors.Is(err, context.Canceled):
 		return unreachable(reasonCanceled, latency)
-	case errors.Is(err, errBadResponse):
+	case errors.Is(err, tgctl.ErrBadResponse):
 		return unreachable(reasonBadResponse, latency)
 	}
 	return unreachable(reasonNetwork, latency)

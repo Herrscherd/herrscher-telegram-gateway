@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	contracts "github.com/Herrscherd/herrscher-contracts"
+	"github.com/Herrscherd/tgctl"
 )
 
 const (
@@ -132,7 +133,7 @@ func (s settings) authorizes(userID int64) bool {
 	return s.allowAll || userID == s.owner || s.users[userID]
 }
 
-func (s settings) admits(msg *message) bool {
+func (s settings) admits(msg *tgctl.Message) bool {
 	if msg.From == nil || msg.From.IsBot || !s.authorizes(msg.From.ID) {
 		return false
 	}
