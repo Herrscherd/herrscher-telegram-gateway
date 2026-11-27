@@ -296,6 +296,9 @@ func requireSerialReactions(t *testing.T, seed int, reg *ackRegistry, bot *count
 	if len(reg.entries) != 0 {
 		t.Fatalf("seed %d: %d registry entries survive after every message went idle", seed, len(reg.entries))
 	}
+	if len(bot.posted) == 0 {
+		t.Fatalf("seed %d: no reaction reached Telegram", seed)
+	}
 	for message, reactions := range bot.posted {
 		requireAckThenOutcomes(t, seed, message, reactions)
 	}
