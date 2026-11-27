@@ -75,6 +75,38 @@ A message with no text and no usable file (a sticker, a voice note, a location)
 is ignored. A file the agent cannot read (not an image, a PDF or a text file, or
 over 10 MiB) is not downloaded, and gets one line saying so.
 
+## One bot per agent
+
+An agent can speak through its own Telegram bot. The host lists the agents
+of the daemon with their reply rule and their channels, and the gateway
+reads that list for each message.
+
+- An agent gets its own bot when the host gives it a token, read from
+  `TELEGRAM_BOT_TOKEN_<AGENT>` (the agent name upper-cased, `-` written as
+  `_`). A token change needs a restart. A token that cannot sign in is
+  logged and skipped, and its agent falls back to the house bot.
+- An agent with its own bot posts and receives through it, with no header.
+  An agent without one speaks through the house bot, and its first line
+  names it in bold.
+- A conversation with an agent is addressed `<chat>@<agent>` inside the
+  gateway, and its session is named `tg-<chat>-<agent>`. A name too long for
+  the session limit is shortened to a hash of the address, which stays
+  stable for the same conversation and agent.
+- Keyboards and their presses always go through the house bot, so a press
+  reaches the house poller whichever bot posted the keyboard.
+- Reply rules: `never` drops every message. `mention` (the default) answers
+  when the agent is addressed: its `@username`, a text mention of it, a
+  `/command@username`, a reply to one of its messages, or a private chat
+  with it. An agent without its own bot also answers to `@agent` written in
+  the text. `channels` adds every message of the chats listed for the agent.
+- A message that mentions an agent bot and not the house bot is not answered
+  by the house. A message authored by any of our bots is dropped everywhere.
+- A `channels` agent only sees every message of a group when its bot has
+  privacy mode off. Turn it off with `/setprivacy` in BotFather for that bot.
+  With privacy mode on, a bot only sees commands, mentions and replies.
+- A draft that a user stops is matched on the bot that streamed it, so a
+  stop in a private chat reaches the agent that was speaking.
+
 ## The live turn
 
 In a private chat the turn streams as a draft (`sendMessageDraft`), updated at
