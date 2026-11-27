@@ -65,12 +65,12 @@ func (b *voiceBots) settleLocked(agent string) {
 	delete(b.signing, agent)
 }
 
-func (b *voiceBots) ownsLocked(id int64) bool {
-	if id == b.self.ID {
+func (b *voiceBots) ownsLocked(botID int64) bool {
+	if botID == b.self.ID {
 		return true
 	}
 	for _, bot := range b.own {
-		if bot.self.ID == id {
+		if bot.self.ID == botID {
 			return true
 		}
 	}
@@ -135,9 +135,9 @@ func (b *voiceBots) mentionsAgentBot(raw string, entities []tgctl.Entity) bool {
 
 func (b *voiceBots) mentionsOtherAgentBot(raw string, entities []tgctl.Entity, self tgctl.User) bool {
 	var others []tgctl.User
-	for _, id := range b.identities() {
-		if id.ID != self.ID {
-			others = append(others, id)
+	for _, identity := range b.identities() {
+		if identity.ID != self.ID {
+			others = append(others, identity)
 		}
 	}
 	return mentionedByAny(raw, entities, others)

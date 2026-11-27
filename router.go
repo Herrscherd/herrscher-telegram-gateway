@@ -229,10 +229,7 @@ func (r *router) awaitSignIns(ctx context.Context, from origin, msg *tgctl.Messa
 	raw, _ := textOf(msg)
 	base := conversationOf(msg)
 	for _, voice := range voices {
-		if voice.Reply == contracts.ReplyNever {
-			continue
-		}
-		if !namesMentioned(raw, voice.Agent) && !(voice.Reply == contracts.ReplyInChannels && channelHas(voice.Channels, base)) {
+		if voice.Reply == contracts.ReplyNever || !reachesVoice(voice, raw, base) {
 			continue
 		}
 		if err := r.voices.awaitSignIn(ctx, voice.Agent); err != nil {
@@ -240,6 +237,13 @@ func (r *router) awaitSignIns(ctx context.Context, from origin, msg *tgctl.Messa
 		}
 	}
 	return nil
+}
+
+func reachesVoice(voice contracts.AgentVoice, raw string, base chatRef) bool {
+	if namesMentioned(raw, voice.Agent) {
+		return true
+	}
+	return voice.Reply == contracts.ReplyInChannels && channelHas(voice.Channels, base)
 }
 
 func voicesOf(ctrl contracts.SessionControl) []contracts.AgentVoice {
