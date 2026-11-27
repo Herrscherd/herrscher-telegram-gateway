@@ -79,6 +79,7 @@ func newGateway(ctx context.Context, api bot, set settings, self tgctl.User, msg
 		menus: newMenuTable(), lanes: newLanes(), life: life, cancel: cancel, now: time.Now, album: albumWindow,
 		sinks: make(map[string]*sink),
 	}
+	gateway.drafts.Store(gateway.now().UnixMilli())
 	gateway.router = &router{
 		set: set, msgs: msgs, log: log, menus: gateway.menus, voices: voices,
 		files:    stager{root: stagingRoot(), log: log},
