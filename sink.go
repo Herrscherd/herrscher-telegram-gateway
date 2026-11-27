@@ -71,7 +71,7 @@ func (s *sink) speaker() speaker { return s.voices.speakerAt(s.conv) }
 func (s *sink) apply(ctx context.Context, event contracts.Event) {
 	switch event.T {
 	case eventHuman:
-		s.begin(ctx, event.Who, event.Text)
+		s.begin(event.Who, event.Text)
 	case eventChunk:
 		s.chunk(ctx, event.Text)
 	case eventReset:
@@ -100,13 +100,16 @@ func (s *sink) noteUser(noted notedPrompt) {
 }
 
 func (s *sink) accepted(ctx context.Context, noted notedPrompt) {
+	posted := s.ack(ctx, noted.id)
 	if s.turn != nil && s.turn.promptNote == noted.note {
-		s.ack(ctx)
+		if posted {
+			s.acked = noted.id
+		}
 		return
 	}
 	for index := range s.prompts {
 		if s.prompts[index].note == noted.note {
-			s.prompts[index].accepted = true
+			s.prompts[index].accepted = posted
 			return
 		}
 	}
@@ -140,23 +143,20 @@ func (s *sink) claim(author, text string) notedPrompt {
 	return notedPrompt{}
 }
 
-func (s *sink) begin(ctx context.Context, author, text string) {
+func (s *sink) begin(author, text string) {
 	claimed := s.claim(author, text)
 	s.turn = &turnView{draftID: s.drafts.Add(1), asked: notedPrompt{author: author, text: text}, prompt: claimed.id, promptNote: claimed.note}
 	if claimed.accepted {
-		s.ack(ctx)
+		s.acked = claimed.id
 	}
 }
 
-func (s *sink) ack(ctx context.Context) {
-	if s.turn.prompt == 0 {
-		return
-	}
-	if err := s.speaker().api.SetMessageReaction(ctx, s.conv.chat, s.turn.prompt, ackEmoji); err != nil {
+func (s *sink) ack(ctx context.Context, messageID int64) bool {
+	if err := s.speaker().api.SetMessageReaction(ctx, s.conv.chat, messageID, ackEmoji); err != nil {
 		s.log.Warn("ack reaction failed", "err", err)
-		return
+		return false
 	}
-	s.acked = s.turn.prompt
+	return true
 }
 
 func (s *sink) stoppedDraft(draftID int64) bool {
@@ -175,7 +175,7 @@ func (s *sink) swapAck(ctx context.Context, emoji string) {
 
 func (s *sink) chunk(ctx context.Context, text string) {
 	if s.turn == nil {
-		s.begin(ctx, "", "")
+		s.begin("", "")
 	}
 	s.turn.text += text
 	if s.now().Before(s.turn.nextFlush) {

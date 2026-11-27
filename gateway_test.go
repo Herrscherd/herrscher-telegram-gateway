@@ -375,6 +375,35 @@ func TestARefusedMessageNeverGetsTheAckEmoji(t *testing.T) {
 	}
 }
 
+type emittingControl struct {
+	*fakeControl
+
+	during func()
+}
+
+func (c *emittingControl) Submit(name string, in contracts.Inbound) bool {
+	c.during()
+	return c.fakeControl.Submit(name, in)
+}
+
+func TestTheAckArrivesWhenTheTurnEndsBeforeTheAcceptedJobRuns(t *testing.T) {
+	fake := newFakeTelegram(t)
+	ctrl := &emittingControl{fakeControl: newFakeControl()}
+	ctrl.live("tg-42", "42")
+	gateway := startGateway(t, fake, ctrl, nil)
+	conv := contracts.Conversation{Gateway: gatewayKind, ID: "42"}
+	ctrl.during = func() {
+		gateway.EmitTo(conv, humanAsking("go"))
+		gateway.EmitTo(conv, contracts.Event{T: eventReply, Done: true, Text: "done"})
+	}
+
+	fake.push(privateText(1, 10, testOwner, "go"))
+	reaction := decodeCall[reactionCall](t, fake.waitCalls(t, "setMessageReaction", 1)[0])
+	if len(reaction.Reaction) != 1 || reaction.Reaction[0].Emoji != ackEmoji || reaction.MessageID != 10 {
+		t.Fatalf("the ack went %+v, want %s on message 10", reaction, ackEmoji)
+	}
+}
+
 type fakeClock struct {
 	mu  sync.Mutex
 	now time.Time
