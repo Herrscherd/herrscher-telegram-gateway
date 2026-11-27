@@ -2,6 +2,8 @@ package telegram
 
 import (
 	"context"
+	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,4 +99,70 @@ func TestTheFailureEmojiReplacesTheSharedAckWhenAnyAddresseeFailed(t *testing.T)
 	if got := lastReaction(t, fake); len(got.Reaction) != 1 || got.Reaction[0].Emoji != failedEmoji || got.MessageID != sharedMessageID {
 		t.Fatalf("the shared ack ends as %+v, want %s on message %d", got, failedEmoji, sharedMessageID)
 	}
+}
+
+type stalledBot struct {
+	bot
+
+	armed   atomic.Bool
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *stalledBot) SetMessageReaction(context.Context, int64, int64, string) error {
+	if b.armed.Load() {
+		close(b.started)
+		<-b.release
+	}
+	return nil
+}
+
+type quietBot struct{ bot }
+
+func (quietBot) SetMessageReaction(context.Context, int64, int64, string) error { return nil }
+
+func TestAStalledReactionInOneConversationDoesNotBlockAnother(t *testing.T) {
+	cases := map[string]func(reg *ackRegistry, stalled *stalledBot) <-chan struct{}{
+		"open": func(reg *ackRegistry, stalled *stalledBot) <-chan struct{} {
+			stalled.armed.Store(true)
+			return goCall(func() { reg.open(context.Background(), ackKey{chat: 1, message: 10}, stalled) })
+		},
+		"close": func(reg *ackRegistry, stalled *stalledBot) <-chan struct{} {
+			reg.open(context.Background(), ackKey{chat: 1, message: 10}, stalled)
+			stalled.armed.Store(true)
+			return goCall(func() { reg.close(context.Background(), ackKey{chat: 1, message: 10}, "") })
+		},
+	}
+	for name, stall := range cases {
+		t.Run(name, func(t *testing.T) {
+			reg := newAckRegistry(slog.New(slog.DiscardHandler))
+			stalled := &stalledBot{started: make(chan struct{}), release: make(chan struct{})}
+			stalledDone := stall(reg, stalled)
+			t.Cleanup(func() {
+				close(stalled.release)
+				<-stalledDone
+			})
+			select {
+			case <-stalled.started:
+			case <-time.After(waitLimit):
+				t.Fatal("the stalled reaction never started")
+			}
+
+			otherDone := goCall(func() { reg.open(context.Background(), ackKey{chat: 2, message: 20}, quietBot{}) })
+			select {
+			case <-otherDone:
+			case <-time.After(waitLimit):
+				t.Fatal("conversation 2's ack waited for conversation 1's stalled Telegram call")
+			}
+		})
+	}
+}
+
+func goCall(call func()) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		call()
+	}()
+	return done
 }
