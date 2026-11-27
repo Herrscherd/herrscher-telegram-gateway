@@ -206,7 +206,7 @@ func (r *router) answer(ctx context.Context, from origin, ctrl contracts.Session
 	}
 	if len(attachments) < offered && !*refusalShown {
 		*refusalShown = true
-		r.post(ctx, conv, r.msgs.say(fileRefusedKey, nil))
+		r.post(ctx, address{chatRef: conversationOf(msg)}, r.msgs.say(fileRefusedKey, nil))
 	}
 	if text == "" && len(attachments) == 0 {
 		return

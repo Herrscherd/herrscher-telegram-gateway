@@ -228,8 +228,13 @@ func TestAFileRefusedAcrossSeveralTargetsIsExplainedOnce(t *testing.T) {
 	})
 	refusals := 0
 	for _, call := range fake.callsTo("sendMessage") {
-		if strings.Contains(decodeCall[tgctl.OutgoingMessage](t, call).Text, "not accepted") {
-			refusals++
+		out := decodeCall[tgctl.OutgoingMessage](t, call)
+		if !strings.Contains(out.Text, "not accepted") {
+			continue
+		}
+		refusals++
+		if call.token != testToken || out.ChatID != testGroup || strings.HasPrefix(out.Text, "bob\n") {
+			t.Fatalf("the refusal went through token %q to chat %d under an agent header: %q", call.token, out.ChatID, out.Text)
 		}
 	}
 	if refusals != 1 {

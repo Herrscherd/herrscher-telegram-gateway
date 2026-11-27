@@ -199,7 +199,8 @@ under the host's attachment tree (`$TMPDIR/herrscher-attachments/telegram`),
 then handed over as a `file://` path. A file over 10 MiB is skipped before it is
 downloaded, and a file name is cut to 120 bytes. The manifest declares no
 attachment host, so the host never fetches a Telegram URL itself. A refused file
-is explained once per message, even when the message reaches several agents.
+is explained once per message, by the house bot in the house conversation of the
+chat, even when the message reaches several agents.
 
 An album arrives as one message per item. The gateway gathers the items that
 share a `media_group_id` until a second passes without a new one, and hands them
