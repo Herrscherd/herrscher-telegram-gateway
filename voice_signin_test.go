@@ -27,6 +27,7 @@ func (hangingSignIn) GetMe(ctx context.Context) (tgctl.User, error) {
 
 type stuckSignIn struct {
 	bot
+
 	entered chan<- struct{}
 	release <-chan struct{}
 }
@@ -47,7 +48,10 @@ func unboundGateway(t *testing.T, fake *fakeTelegram, dial func(token string) bo
 	if err != nil {
 		t.Fatalf("build the gateway: %v", err)
 	}
-	gateway := set.Gateway.(*Gateway)
+	gateway, ok := set.Gateway.(*Gateway)
+	if !ok {
+		t.Fatalf("gateway is %T", set.Gateway)
+	}
 	gateway.dial = dial
 	return gateway
 }
@@ -134,7 +138,10 @@ func TestASignInFailureNeverPutsTheTokenInTheLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build the gateway: %v", err)
 	}
-	gateway := set.Gateway.(*Gateway)
+	gateway, ok := set.Gateway.(*Gateway)
+	if !ok {
+		t.Fatalf("gateway is %T", set.Gateway)
+	}
 	gateway.dial = func(token string) bot { return tgctl.New(token, tgctl.WithBaseURL(unreachable.URL)) }
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
