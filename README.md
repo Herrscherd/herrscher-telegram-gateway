@@ -165,8 +165,11 @@ for issue 206), and by its position otherwise. The prompt gets a 👀 reaction
 while its turn runs. It is cleared when the turn completes, swapped for 💔 when
 the turn failed, and a failed or stopped turn also says so in its last line. A
 prompt that ends before any turn starts, dropped by the host or closed by a
-`Done` with no turn open, loses its 👀 the same way. A rate limit from Telegram
-(`retry_after`) is waited out.
+`Done` with no turn open, loses its 👀 the same way, and a turn that starts
+after it gets its 👀 back. When several agents answer the same message, the 👀 is
+shared: it is posted when the first of them accepts the message, stays up until
+the last one ends, and is swapped for 💔 if any of them failed. A rate limit
+from Telegram (`retry_after`) is waited out.
 
 Answers are formatted with message entities, never with escaped MarkdownV2: the
 gateway reads the Markdown a model writes (bold, italic, strikethrough, inline
