@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/Herrscherd/tgctl"
 )
 
 const (
@@ -21,7 +23,7 @@ type chatRef struct {
 	thread int64
 }
 
-func conversationOf(msg *message) chatRef {
+func conversationOf(msg *tgctl.Message) chatRef {
 	ref := chatRef{chat: msg.Chat.ID}
 	if msg.IsTopicMessage && msg.ThreadID != 0 {
 		ref.thread = msg.ThreadID

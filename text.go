@@ -11,6 +11,7 @@ import (
 
 	contracts "github.com/Herrscherd/herrscher-contracts"
 	"github.com/Herrscherd/herrscher-contracts/i18n"
+	"github.com/Herrscherd/tgctl"
 )
 
 //go:embed locales
@@ -121,7 +122,7 @@ func (m messages) unexpected(lang i18n.Language, detail string) formatted {
 		out.write(m.sayIn(lang, noDetailKey, nil))
 		return out.result()
 	}
-	out.span(entityPre, clipRunes(detail, detailMaxRunes), entity{})
+	out.span(entityPre, clipRunes(detail, detailMaxRunes), tgctl.Entity{})
 	return out.result()
 }
 

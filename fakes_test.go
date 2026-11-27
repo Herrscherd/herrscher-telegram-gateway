@@ -14,6 +14,7 @@ import (
 	"time"
 
 	contracts "github.com/Herrscherd/herrscher-contracts"
+	"github.com/Herrscherd/tgctl"
 )
 
 const (
@@ -82,7 +83,7 @@ type fakeTelegram struct {
 	server   *httptest.Server
 	mu       sync.Mutex
 	calls    []apiCall
-	updates  []update
+	updates  []tgctl.Update
 	nextID   int64
 	files    map[string]string
 	fail     map[string]int
@@ -160,7 +161,7 @@ func (f *fakeTelegram) serve(writer http.ResponseWriter, request *http.Request) 
 }
 
 func (f *fakeTelegram) unmodified(body []byte) bool {
-	var edit textEdit
+	var edit tgctl.EditMessageText
 	if err := json.Unmarshal(body, &edit); err != nil {
 		f.t.Errorf("decode the edit: %v", err)
 	}
@@ -173,7 +174,7 @@ func (f *fakeTelegram) unmodified(body []byte) bool {
 	return false
 }
 
-func (f *fakeTelegram) drain(ctx context.Context) []update {
+func (f *fakeTelegram) drain(ctx context.Context) []tgctl.Update {
 	pushed := f.change.next()
 	f.mu.Lock()
 	waiting := len(f.updates) > 0
@@ -190,7 +191,7 @@ func (f *fakeTelegram) drain(ctx context.Context) []update {
 	queued := f.updates
 	f.updates = nil
 	if queued == nil {
-		return []update{}
+		return []tgctl.Update{}
 	}
 	return queued
 }
@@ -206,16 +207,16 @@ func (f *fakeTelegram) result(method string, body []byte) any {
 	}
 	switch method {
 	case "getMe":
-		return botIdentity{ID: testBotID, Username: testBotName}
+		return tgctl.User{ID: testBotID, Username: testBotName}
 	case "sendMessage":
 		f.mu.Lock()
 		f.nextID++
 		sent := f.nextID
 		f.texts[sent] = target.Text
 		f.mu.Unlock()
-		return message{MessageID: sent, Chat: chat{ID: target.ChatID}}
+		return tgctl.Message{MessageID: sent, Chat: tgctl.Chat{ID: target.ChatID}}
 	case "getFile":
-		return remoteFile{FileID: target.FileID, FilePath: "documents/" + target.FileID + ".txt"}
+		return tgctl.File{FileID: target.FileID, FilePath: "documents/" + target.FileID + ".txt"}
 	}
 	return true
 }
@@ -235,7 +236,7 @@ func (f *fakeTelegram) answer(writer http.ResponseWriter, result any) {
 	f.write(writer, `{"ok":true,"result":`+string(raw)+`}`)
 }
 
-func (f *fakeTelegram) push(next ...update) {
+func (f *fakeTelegram) push(next ...tgctl.Update) {
 	f.mu.Lock()
 	f.updates = append(f.updates, next...)
 	f.mu.Unlock()
@@ -385,9 +386,15 @@ func startGateway(t *testing.T, fake *fakeTelegram, ctrl contracts.SessionContro
 	return gateway
 }
 
-func privateText(updateID, messageID, from int64, text string) update {
-	return update{UpdateID: updateID, Message: &message{
-		MessageID: messageID, From: &user{ID: from, FirstName: "Ana", Username: "ana"},
-		Chat: chat{ID: from, Type: chatTypePrivate}, Text: text,
+func privateText(updateID, messageID, from int64, text string) tgctl.Update {
+	return tgctl.Update{UpdateID: updateID, Message: &tgctl.Message{
+		MessageID: messageID, From: &tgctl.User{ID: from, FirstName: "Ana", Username: "ana"},
+		Chat: tgctl.Chat{ID: from, Type: chatTypePrivate}, Text: text,
 	}}
+}
+
+type reactionCall struct {
+	ChatID    int64                `json:"chat_id"`
+	MessageID int64                `json:"message_id"`
+	Reaction  []tgctl.ReactionType `json:"reaction"`
 }

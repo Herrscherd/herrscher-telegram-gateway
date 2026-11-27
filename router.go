@@ -10,6 +10,7 @@ import (
 	"unicode/utf16"
 
 	contracts "github.com/Herrscherd/herrscher-contracts"
+	"github.com/Herrscherd/tgctl"
 )
 
 const (
@@ -44,7 +45,7 @@ type pendingBind struct {
 type router struct {
 	api      bot
 	set      settings
-	self     botIdentity
+	self     tgctl.User
 	msgs     messages
 	log      *slog.Logger
 	menus    *menuTable
@@ -59,7 +60,7 @@ type router struct {
 	holds   int
 }
 
-func (r *router) onUpdate(ctx context.Context, next update) {
+func (r *router) onUpdate(ctx context.Context, next tgctl.Update) {
 	switch {
 	case next.Message != nil:
 		r.onMessage(ctx, next.Message)
@@ -68,20 +69,20 @@ func (r *router) onUpdate(ctx context.Context, next update) {
 	}
 }
 
-func (r *router) accepts(next update) bool {
+func (r *router) accepts(next tgctl.Update) bool {
 	switch {
 	case next.Message != nil:
 		return r.set.admits(next.Message)
 	case next.CallbackQuery != nil:
 		return next.CallbackQuery.Message != nil
-	case next.StoppedGeneration != nil:
-		stopped := next.StoppedGeneration
+	case next.StoppedMessageGeneration != nil:
+		stopped := next.StoppedMessageGeneration
 		return stopped.Chat.Type == chatTypePrivate && r.set.authorizes(stopped.Chat.ID)
 	}
 	return false
 }
 
-func laneKeyOf(next update) string {
+func laneKeyOf(next tgctl.Update) string {
 	if next.CallbackQuery != nil {
 		return conversationOf(next.CallbackQuery.Message).String()
 	}
@@ -90,12 +91,12 @@ func laneKeyOf(next update) string {
 
 type heldAlbum struct {
 	group   string
-	members []*message
-	after   []*message
+	members []*tgctl.Message
+	after   []*tgctl.Message
 	gen     int
 }
 
-func (r *router) onMessage(ctx context.Context, msg *message) {
+func (r *router) onMessage(ctx context.Context, msg *tgctl.Message) {
 	conv := conversationOf(msg).String()
 	r.mu.Lock()
 	held, holding := r.albums[conv]
@@ -123,20 +124,20 @@ func (r *router) onMessage(ctx context.Context, msg *message) {
 	case !holding && msg.MediaGroupID != "":
 		r.holds++
 		gen := r.holds
-		r.albums[conv] = &heldAlbum{group: msg.MediaGroupID, members: []*message{msg}, gen: gen}
+		r.albums[conv] = &heldAlbum{group: msg.MediaGroupID, members: []*tgctl.Message{msg}, gen: gen}
 		r.mu.Unlock()
 		r.scheduleFlush(ctx, msg, gen)
 		return
 	}
 	r.mu.Unlock()
-	r.handle(ctx, msg, []*message{msg})
+	r.handle(ctx, msg, []*tgctl.Message{msg})
 }
 
-func (r *router) isStop(msg *message) bool {
+func (r *router) isStop(msg *tgctl.Message) bool {
 	return strings.EqualFold(stripCommandMention(strings.TrimSpace(msg.Text), r.self.Username), stopCommand)
 }
 
-func (r *router) scheduleFlush(ctx context.Context, msg *message, gen int) {
+func (r *router) scheduleFlush(ctx context.Context, msg *tgctl.Message, gen int) {
 	conv := conversationOf(msg)
 	if !r.later(ctx, conv, func(ctx context.Context) { r.flushAlbum(ctx, conv.String(), gen) }) {
 		r.flushAlbum(ctx, conv.String(), gen)
@@ -175,7 +176,7 @@ func (r *router) heldMessages() int {
 	return count
 }
 
-func (r *router) handle(ctx context.Context, msg *message, members []*message) {
+func (r *router) handle(ctx context.Context, msg *tgctl.Message, members []*tgctl.Message) {
 	text, addressed := r.addressed(msg)
 	if !addressed {
 		return
@@ -248,14 +249,14 @@ func sessionOf(ctrl contracts.SessionControl, conv chatRef) (string, bool) {
 	return "", false
 }
 
-func displayName(from *user) string {
+func displayName(from *tgctl.User) string {
 	if from.Username != "" {
 		return from.Username
 	}
 	return from.FirstName
 }
 
-func (r *router) addressed(msg *message) (string, bool) {
+func (r *router) addressed(msg *tgctl.Message) (string, bool) {
 	raw, entities := msg.Text, msg.Entities
 	if raw == "" {
 		raw, entities = msg.Caption, msg.CaptionEntities
@@ -274,7 +275,7 @@ func (r *router) addressed(msg *message) (string, bool) {
 	return stripCommandMention(strings.TrimSpace(stripped), r.self.Username), true
 }
 
-func (r *router) withoutMention(text string, entities []entity) (string, bool) {
+func (r *router) withoutMention(text string, entities []tgctl.Entity) (string, bool) {
 	units := utf16.Encode([]rune(text))
 	for _, candidate := range entities {
 		end := candidate.Offset + candidate.Length
@@ -293,7 +294,7 @@ func (r *router) withoutMention(text string, entities []entity) (string, bool) {
 	return "", false
 }
 
-func (r *router) mentions(candidate entity, covered string) bool {
+func (r *router) mentions(candidate tgctl.Entity, covered string) bool {
 	switch candidate.Type {
 	case entityMention:
 		return strings.EqualFold(strings.TrimPrefix(covered, "@"), r.self.Username)
@@ -363,8 +364,8 @@ func (r *router) askRepo(ctx context.Context, ctrl contracts.SessionControl, con
 	if len(repos) > len(shown) {
 		prompt = r.msgs.say(repoCappedKey, map[string]any{"Question": prompt, "Shown": len(shown), "Count": len(repos)})
 	}
-	out := outgoing{ChatID: conv.chat, ThreadID: conv.thread, Text: prompt, ReplyMarkup: keyboard(bindPrefix, token, labels)}
-	if _, err := r.api.sendMessage(ctx, out); err != nil {
+	out := tgctl.OutgoingMessage{ChatID: conv.chat, ThreadID: conv.thread, Text: prompt, ReplyMarkup: keyboard(bindPrefix, token, labels)}
+	if _, err := r.api.SendMessage(ctx, out); err != nil {
 		r.log.Warn("repo menu failed", "err", err)
 	}
 }
@@ -397,9 +398,9 @@ func (r *router) bind(ctx context.Context, ctrl contracts.SessionControl, conv c
 	}
 }
 
-func (r *router) onCallback(ctx context.Context, query *callbackQuery) {
+func (r *router) onCallback(ctx context.Context, query *tgctl.CallbackQuery) {
 	answer, then := r.pick(ctx, query)
-	if err := r.api.answerCallbackQuery(ctx, callbackAnswer{CallbackQueryID: query.ID, Text: answer}); err != nil {
+	if err := r.api.AnswerCallbackQuery(ctx, tgctl.CallbackAnswer{CallbackQueryID: query.ID, Text: answer}); err != nil {
 		r.log.Warn("answer button press failed", "err", err)
 	}
 	if then != nil {
@@ -407,7 +408,7 @@ func (r *router) onCallback(ctx context.Context, query *callbackQuery) {
 	}
 }
 
-func (r *router) pick(ctx context.Context, query *callbackQuery) (string, job) {
+func (r *router) pick(ctx context.Context, query *tgctl.CallbackQuery) (string, job) {
 	if !r.set.authorizes(query.From.ID) {
 		return r.msgs.say(deniedKey, nil), nil
 	}
@@ -459,9 +460,9 @@ func (r *router) pickRepo(ctrl contracts.SessionControl, conv chatRef, token str
 	return r.msgs.say(repoDoneKey, map[string]any{"Repo": picked.label}), bind
 }
 
-func (r *router) closeMenu(ctx context.Context, msg *message) {
-	edit := markupEdit{ChatID: msg.Chat.ID, MessageID: msg.MessageID, ReplyMarkup: inlineKeyboard{Rows: [][]inlineButton{}}}
-	if err := r.api.editMessageReplyMarkup(ctx, edit); err != nil {
+func (r *router) closeMenu(ctx context.Context, msg *tgctl.Message) {
+	edit := tgctl.EditMessageReplyMarkup{ChatID: msg.Chat.ID, MessageID: msg.MessageID, ReplyMarkup: tgctl.InlineKeyboardMarkup{Rows: [][]tgctl.InlineKeyboardButton{}}}
+	if err := r.api.EditMessageReplyMarkup(ctx, edit); err != nil {
 		r.log.Warn("close the menu failed", "err", err)
 	}
 }
@@ -472,8 +473,8 @@ func (r *router) post(ctx context.Context, conv chatRef, text string) {
 
 func (r *router) postFormatted(ctx context.Context, conv chatRef, text formatted) {
 	for _, part := range text.split(messageMaxUnits) {
-		out := outgoing{ChatID: conv.chat, ThreadID: conv.thread, Text: part.text, Entities: part.entities, LinkPreview: noPreview()}
-		if _, err := r.api.sendMessage(ctx, out); err != nil {
+		out := tgctl.OutgoingMessage{ChatID: conv.chat, ThreadID: conv.thread, Text: part.text, Entities: part.entities, LinkPreview: noPreview()}
+		if _, err := r.api.SendMessage(ctx, out); err != nil {
 			r.log.Warn("post failed", "err", err)
 		}
 	}

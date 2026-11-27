@@ -2,8 +2,8 @@
 
 **The Telegram edge.** It adapts the Telegram Bot API to the Herrscher gateway
 ports and registers itself from `init()`, so a host enables Telegram with a
-blank import and a rebuild. It talks to the Bot API over plain HTTPS, with no
-client library.
+blank import and a rebuild. It talks to the Bot API over HTTPS through the
+`github.com/Herrscherd/tgctl` client.
 
 It receives updates by long polling (`getUpdates`), so the daemon needs no
 public URL and runs fine behind a NAT. It is a smart gateway: it implements

@@ -23,7 +23,7 @@ func TestMarkdownBecomesEntitiesCountedInUTF16(t *testing.T) {
 		t.Fatalf("entities = %v", covered)
 	}
 	if got.entities[3].URL != "https://example.com" || got.entities[4].Language != "go" {
-		t.Fatalf("entity details = %+v", got.entities)
+		t.Fatalf("tgctl.Entity details = %+v", got.entities)
 	}
 }
 
